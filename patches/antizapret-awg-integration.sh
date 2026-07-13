@@ -51,17 +51,53 @@ install_awg() {
     if command -v awg >/dev/null 2>&1 && modinfo amneziawg >/dev/null 2>&1; then
         log "amneziawg уже установлен"; return
     fi
-    log "Установка amneziawg (PPA amnezia + DKMS)…"
     export DEBIAN_FRONTEND=noninteractive
+    local os_id="ubuntu"
+    [ -r /etc/os-release ] && os_id="$(. /etc/os-release; echo "${ID:-ubuntu}")"
     apt-get update -y
-    apt-get install -y software-properties-common python3-launchpadlib gnupg2 \
-        "linux-headers-$(uname -r)" curl python3-pip python3-venv
-    add-apt-repository -y ppa:amnezia/ppa
-    apt-get update -y
-    apt-get install -y amneziawg
-    pip3 install --break-system-packages segno >/dev/null 2>&1 || pip3 install --break-system-packages "qrcode[pil]"
-    modprobe amneziawg || err "modprobe amneziawg не удался — возможно нужен reboot после DKMS"
-    log "amneziawg установлен"
+    apt-get install -y ca-certificates curl gnupg2 dkms build-essential \
+        python3-pip python3-venv || true
+    # kernel headers: имена различаются (Debian cloud vs обычные ядра)
+    apt-get install -y "linux-headers-$(uname -r)" 2>/dev/null \
+        || apt-get install -y linux-headers-amd64 2>/dev/null \
+        || apt-get install -y linux-headers-cloud-amd64 2>/dev/null \
+        || err "kernel headers не установились — DKMS-сборка может провалиться"
+
+    if [ "$os_id" = "ubuntu" ]; then
+        log "Установка amneziawg (Ubuntu PPA + DKMS)…"
+        apt-get install -y software-properties-common python3-launchpadlib
+        add-apt-repository -y ppa:amnezia/ppa
+        apt-get update -y
+        apt-get install -y amneziawg
+    else
+        # Debian и прочие не-Ubuntu: PPA недоступны. Добавляем репозиторий Amnezia
+        # вручную (deb822, Suites: focal — DKMS-исходники дистро-независимы). Ключ с
+        # keyserver.ubuntu.com. Метод по гайду mk16.de (проверен на Debian 12/13).
+        log "Установка amneziawg (Debian: ручной репозиторий Amnezia + DKMS)…"
+        install -d -m 0755 /usr/share/keyrings
+        curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x75C9DD72C799870E310542E24166F2C257290828" \
+            | gpg --dearmor -o /usr/share/keyrings/amnezia.gpg
+        cat > /etc/apt/sources.list.d/amnezia.sources <<'EOF'
+Types: deb
+URIs: https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu
+Suites: focal
+Components: main
+Signed-By: /usr/share/keyrings/amnezia.gpg
+EOF
+        apt-get update -y
+        apt-get install -y amneziawg amneziawg-tools
+    fi
+    pip3 install --break-system-packages segno >/dev/null 2>&1 || \
+        pip3 install --break-system-packages "qrcode[pil]" >/dev/null 2>&1 || true
+
+    if command -v awg >/dev/null 2>&1 && modprobe amneziawg 2>/dev/null; then
+        log "amneziawg установлен"
+    else
+        err "Модуль amneziawg не загрузился. На свежих ядрах Debian сборка DKMS"
+        err "может падать (upstream issue #143). Проверь:"
+        err "    dkms status ; cat /var/lib/dkms/amneziawg/*/build/make.log"
+        err "Рекомендуемая платформа — Ubuntu 24.04 (протестирована)."
+    fi
 }
 
 # ── 2. overlay ───────────────────────────────────────────────────────────────
