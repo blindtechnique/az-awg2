@@ -2,7 +2,7 @@
 
 # AntiZapret-AWG 2.0
 
-**AntiZapret с настоящим AmneziaWG 2.0 вместо ванильного WireGuard под маской.**
+**AntiZapret с AmneziaWG 2.0.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0-2ea44f)](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
