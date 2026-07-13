@@ -23,7 +23,7 @@ set -euo pipefail
 REPO_URL="https://github.com/fageoner/Antizapret-AWG-2.0"
 REPO_BRANCH="${AWG_REPO_BRANCH:-main}"
 UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
-DEST="/root/antizapret/awg"
+DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
 INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; KEEP_WG=0

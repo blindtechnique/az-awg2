@@ -4,6 +4,6 @@ After=awg-quick@antizapret.service
 
 [Service]
 Type=oneshot
-Environment=AWG_STATS_DB=/root/antizapret/awg/stats.db
+Environment=AWG_STATS_DB=/opt/antizapret-awg/stats.db
 Environment=AWG_DIR=/etc/amnezia/amneziawg
-ExecStart=/root/antizapret/awg/venv/bin/python /root/antizapret/awg/awg_stats.py poll
+ExecStart=/opt/antizapret-awg/venv/bin/python /opt/antizapret-awg/awg_stats.py poll

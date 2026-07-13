@@ -8,10 +8,10 @@
 #   * knot-resolver (/etc/knot-resolver/*.lua)
 #   * custom-скрипты (/root/antizapret/custom*.sh)
 #   * клиентские профили (/root/antizapret/client — вкл. .conf/QR/URI AmneziaWG)
-#   * статистику и сроки временных клиентов (/root/antizapret/awg/stats.db, expiry.tsv)
+#   * статистику и сроки временных клиентов (/opt/antizapret-awg/stats.db, expiry.tsv)
 #
 # Использование:
-#   awg-backup.sh backup [файл.tar.gz]        # создать (default /root/antizapret/awg-backup-<ip>.tar.gz)
+#   awg-backup.sh backup [файл.tar.gz]        # создать (default /opt/antizapret-awg-backup-<ip>.tar.gz)
 #   awg-backup.sh restore <файл.tar.gz>       # восстановить и перезапустить сервисы
 set -euo pipefail
 

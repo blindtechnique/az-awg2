@@ -17,7 +17,7 @@ set -euo pipefail
 
 AWG_DIR="/etc/amnezia/amneziawg"
 STATE_ENV="${AWG_DIR}/obfuscation.env"
-CLIENT_DIR="/root/antizapret/client/amneziawg"
+CLIENT_DIR="/opt/antizapret-awg/clients"
 SELF_DIR="$(dirname "$(readlink -f "$0")")"
 EXPORT="${SELF_DIR}/awg-export.py"
 [ -f "$EXPORT" ] || EXPORT="${SELF_DIR}/../bin/awg-export.py"
@@ -83,7 +83,7 @@ next_ip() {
     die "Свободные IP в ${SUBNET}.0/24 закончились"
 }
 
-EXPIRY_FILE="/root/antizapret/awg/expiry.tsv"
+EXPIRY_FILE="/opt/antizapret-awg/expiry.tsv"
 
 # ── парсинг длительности TTL (30m/2h/7d) → секунды ───────────────────────────
 ttl_seconds() {

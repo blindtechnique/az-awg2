@@ -20,7 +20,7 @@ AWG_DIR="/etc/amnezia/amneziawg"
 STATE_ENV="${AWG_DIR}/obfuscation.env"          # AWG_* переменные (единый источник)
 STATE_META="${AWG_DIR}/obfuscation.meta"        # preset/template/fp/host/mtu
 GEN="$(dirname "$(readlink -f "$0")")/../obfuscation/awg_obfuscate.py"
-[ -f "$GEN" ] || GEN="/root/antizapret/awg/awg_obfuscate.py"   # fallback после установки
+[ -f "$GEN" ] || GEN="/opt/antizapret-awg/awg_obfuscate.py"   # fallback после установки
 SERVER_ANTIZAPRET="${AWG_AZ_CONF:-${AWG_DIR}/antizapret.conf}"
 SERVER_VPN="${AWG_VPN_CONF:-${AWG_DIR}/vpn.conf}"
 

@@ -31,7 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-DB_PATH = os.environ.get("AWG_STATS_DB", "/root/antizapret/awg/stats.db")
+DB_PATH = os.environ.get("AWG_STATS_DB", "/opt/antizapret-awg/stats.db")
 AWG_DIR = os.environ.get("AWG_DIR", "/etc/amnezia/amneziawg")
 
 

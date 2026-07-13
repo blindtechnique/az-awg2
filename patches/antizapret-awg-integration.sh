@@ -36,7 +36,7 @@ done
 AWG_DIR="/etc/amnezia/amneziawg"
 WG_DIR="/etc/wireguard"
 OVERLAY="$(dirname "$(readlink -f "$0")")/../overlay"
-DEST="/root/antizapret/awg"
+DEST="/opt/antizapret-awg"
 SERVICES="$AWG_DIR/services.env"
 
 log() { printf '\033[1;32m[integration]\033[0m %s\n' "$*"; }
@@ -106,7 +106,8 @@ deploy_overlay() {
     mkdir -p "$DEST"
     cp "$OVERLAY/obfuscation/awg_obfuscate.py" "$OVERLAY/bin/awg-obfuscation.sh" \
        "$OVERLAY/bin/awg-export.py" "$OVERLAY/bin/client-awg.sh" \
-       "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg_stats.py" "$DEST/" 2>/dev/null || true
+       "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg-reintegrate.sh" \
+       "$OVERLAY/bin/awg_stats.py" "$DEST/" 2>/dev/null || true
     chmod +x "$DEST"/*.sh "$DEST"/*.py 2>/dev/null || true
     ln -sf "$DEST/awg-obfuscation.sh" /usr/local/bin/awg-obfuscation
     ln -sf "$DEST/client-awg.sh" /usr/local/bin/awg-client
@@ -114,7 +115,16 @@ deploy_overlay() {
     mkdir -p /etc/systemd/system/awg-quick@.service.d
     cp "$OVERLAY/systemd/awg-quick@.service.d/override.conf" \
         /etc/systemd/system/awg-quick@.service.d/override.conf
+    # самовосстановление после обновления AntiZapret: systemd-юнит (на загрузке) +
+    # хук в custom-up.sh (на каждом старте antizapret). Оба зовут awg-reintegrate.sh.
+    cp "$OVERLAY/../bot/awg-reintegrate.service" /etc/systemd/system/ 2>/dev/null || true
+    local cu=/root/antizapret/custom-up.sh
+    if [ -f "$cu" ] && ! grep -q 'awg-reintegrate' "$cu"; then
+        printf '\n# AntiZapret-AWG: самовосстановление слоя AmneziaWG после обновления\n%s/awg-reintegrate.sh >/dev/null 2>&1 &\n' "$DEST" >> "$cu"
+        log "hook самовосстановления добавлен в custom-up.sh"
+    fi
     systemctl daemon-reload
+    systemctl enable awg-reintegrate.service 2>/dev/null || true
 }
 
 # ── 3. параметры режима + services.env ───────────────────────────────────────

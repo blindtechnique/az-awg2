@@ -1,0 +1,12 @@
+[Unit]
+Description=AntiZapret-AWG self-heal after AntiZapret update
+After=antizapret.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/antizapret-awg/awg-reintegrate.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
