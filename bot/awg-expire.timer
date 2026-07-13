@@ -1,0 +1,10 @@
+[Unit]
+Description=Check AmneziaWG temporary clients every 5 min
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

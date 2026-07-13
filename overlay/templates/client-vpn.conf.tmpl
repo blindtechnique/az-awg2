@@ -1,0 +1,12 @@
+[Interface]
+PrivateKey = ${CLIENT_PRIVATE_KEY}
+Address = ${CLIENT_IP}/32
+DNS = ${CLIENT_DNS}
+${AWG_OBFUSCATION}
+
+[Peer]
+PublicKey = ${PUBLIC_KEY}
+PresharedKey = ${CLIENT_PRESHARED_KEY}
+Endpoint = ${SERVER_HOST}:51080
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 15

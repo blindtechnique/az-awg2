@@ -1,0 +1,7 @@
+# AntiZapret-AWG — серверный интерфейс AmneziaWG «vpn» (полный туннель).
+# Подсеть 10.28.8.0/24 → сервис vpn: весь трафик клиента идёт через сервер.
+[Interface]
+PrivateKey = ${PRIVATE_KEY}
+Address = 10.28.8.1/24
+ListenPort = 51080
+__AWG_OBFUSCATION__

@@ -1,0 +1,9 @@
+# AntiZapret-AWG — серверный интерфейс AmneziaWG «antizapret» (split-routing).
+# Имя интерфейса = antizapret → вся маршрутизация/firewall/WARP upstream работает как есть.
+# Подсеть 10.29.8.0/24 → сервис antizapret: наружу идёт только заблокированное.
+# Блок __AWG_OBFUSCATION__ подставляется awg-obfuscation.sh (совпадает с клиентами).
+[Interface]
+PrivateKey = ${PRIVATE_KEY}
+Address = 10.29.8.1/24
+ListenPort = 51443
+__AWG_OBFUSCATION__

@@ -1,0 +1,27 @@
+[Unit]
+Description=AntiZapret-AWG Telegram bot
+After=network-online.target awg-quick@antizapret.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ── конфигурация бота (заполняется установщиком) ──
+Environment=AWG_BOT_TOKEN=PASTE_TOKEN_HERE
+Environment=AWG_BOT_ADMINS=123456789
+Environment=AWG_CLIENT_SH=/usr/local/bin/awg-client
+Environment=AWG_OBF_SH=/usr/local/bin/awg-obfuscation
+Environment=AWG_BACKUP_SH=/usr/local/bin/awg-backup
+Environment=AWG_UPSTREAM_CLIENT_SH=/root/antizapret/client.sh
+Environment=AWG_CLIENT_DIR=/root/antizapret/client/amneziawg
+Environment=AWG_OVPN_DIR=/root/antizapret/client/openvpn
+Environment=AWG_STATS_PY=/root/antizapret/awg/awg_stats.py
+Environment=AWG_EXPORT_PY=/root/antizapret/awg/awg-export.py
+Environment=AWG_VENV_PY=/root/antizapret/awg/venv/bin/python
+ExecStart=/root/antizapret/awg/venv/bin/python /root/antizapret/awg/bot/awg_bot.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target
