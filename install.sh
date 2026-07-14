@@ -17,7 +17,10 @@
 #                      по умолчанию WG заменяется на AmneziaWG на тех же портах 51443/51080
 #   --preset X --template Y --fp Z   обфускация без вопросов
 #   --no-bot           не спрашивать про Telegram-бота
-#   --reconfigure      переспросить параметры заново
+#   --update           обновить код/бот/самовосстановление БЕЗ смены обфускации
+#                      и без пересборки клиентов (существующие клиенты не ломаются)
+#   --reconfigure      переспросить параметры заново (генерирует НОВЫЙ профиль
+#                      обфускации → клиентам нужно переимпортировать конфиги)
 set -euo pipefail
 
 REPO_URL="https://github.com/fageoner/Antizapret-AWG-2.0"
@@ -26,7 +29,7 @@ UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
 DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
-INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; KEEP_WG=0
+INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; KEEP_WG=0; UPDATE=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""
 
 # ── самозагрузка (curl|bash): клонируем и re-exec, с защитой от зацикливания ──
@@ -47,6 +50,7 @@ REPO_DIR="$SELF_DIR"
 while [ $# -gt 0 ]; do
     case "$1" in
         --install-base) INSTALL_BASE=1; shift ;;
+        --update) UPDATE=1; shift ;;
         --keep-wireguard) KEEP_WG=1; shift ;;
         --no-bot) NO_BOT=1; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
@@ -219,6 +223,31 @@ awg_layer() {
     log "   awg-client add myphone antizapret"
 }
 
+# ── обновление кода без переконфигурации (обфускация и клиенты не меняются) ───
+update_layer() {
+    base_installed || { log "AntiZapret не установлен — нечего обновлять"; exit 1; }
+    if [ ! -f /etc/amnezia/amneziawg/services.env ]; then
+        log "Слой AmneziaWG ещё не установлен. Запусти без --update для установки."
+        exit 1
+    fi
+    log "Обновление AntiZapret-AWG (код и сервисы; обфускация и клиенты НЕ трогаются)…"
+    # 1. overlay-скрипты, systemd-юниты, самовосстановление, хук — без regen обфускации
+    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --update
+    # 2. обновить юниты статистики/автоудаления
+    setup_stats
+    # 3. обновить код бота (если установлен) и перезапустить
+    if [ -f /etc/systemd/system/awg-bot.service ]; then
+        mkdir -p "$DEST/bot"
+        cp "$REPO_DIR/bot/awg_bot.py" "$DEST/bot/"
+        [ -d "$DEST/venv" ] && "$DEST/venv/bin/pip" install -q -r "$REPO_DIR/bot/requirements.txt" 2>/dev/null || true
+        systemctl restart awg-bot 2>/dev/null || true
+        log "Бот обновлён и перезапущен"
+    fi
+    echo
+    log "✅ Обновление завершено. Уже созданные клиенты работают как раньше —"
+    log "   переимпортировать конфиги НЕ нужно."
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 main() {
     # чистим устаревший awg-resume от прошлых версий установщика (больше не нужен)
@@ -226,6 +255,10 @@ main() {
         systemctl disable --now awg-resume.service 2>/dev/null || true
         rm -f /etc/systemd/system/awg-resume.service
         systemctl daemon-reload 2>/dev/null || true
+    fi
+    if [ "$UPDATE" = 1 ]; then
+        update_layer
+        exit 0
     fi
     if [ "$INSTALL_BASE" = 1 ]; then
         install_base

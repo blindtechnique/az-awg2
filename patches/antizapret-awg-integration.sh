@@ -18,7 +18,7 @@
 # от режима.
 set -euo pipefail
 
-PRESET="medium"; TEMPLATE=""; FP="chrome"; KEEP_WG=0; MTU=1320; HOST=""
+PRESET="medium"; TEMPLATE=""; FP="chrome"; KEEP_WG=0; MTU=1320; HOST=""; UPDATE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --preset) PRESET="$2"; shift 2 ;;
@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
         --mtu) MTU="$2"; shift 2 ;;
         --host) HOST="$2"; shift 2 ;;
         --keep-wireguard) KEEP_WG=1; shift ;;
+        --update) UPDATE=1; shift ;;
         *) echo "Неизвестный флаг: $1" >&2; exit 2 ;;
     esac
 done
@@ -115,8 +116,14 @@ deploy_overlay() {
     mkdir -p /etc/systemd/system/awg-quick@.service.d
     cp "$OVERLAY/systemd/awg-quick@.service.d/override.conf" \
         /etc/systemd/system/awg-quick@.service.d/override.conf
-    # самовосстановление после обновления AntiZapret: systemd-юнит (на загрузке) +
-    # хук в custom-up.sh (на каждом старте antizapret). Оба зовут awg-reintegrate.sh.
+    # самовосстановление после обновления AntiZapret. Три якоря:
+    #  1) drop-in ExecStartPost на antizapret.service — самый надёжный: срабатывает
+    #     при КАЖДОМ старте antizapret (загрузка/авто-апдейт/setup), переживает rm -rf;
+    #  2) awg-reintegrate.service — на загрузке;
+    #  3) хук в custom-up.sh — на старте antizapret (пока его не стёр setup.sh).
+    mkdir -p /etc/systemd/system/antizapret.service.d
+    cp "$OVERLAY/systemd/antizapret.service.d/awg-reintegrate.conf" \
+        /etc/systemd/system/antizapret.service.d/awg-reintegrate.conf 2>/dev/null || true
     cp "$OVERLAY/../bot/awg-reintegrate.service" /etc/systemd/system/ 2>/dev/null || true
     local cu=/root/antizapret/custom-up.sh
     if [ -f "$cu" ] && ! grep -q 'awg-reintegrate' "$cu"; then
@@ -278,6 +285,28 @@ switch_services() {
 }
 
 main() {
+    # ── режим ОБНОВЛЕНИЯ: только код/сервисы/самовосстановление. НЕ трогаем
+    #    обфускацию, серверные и клиентские конфиги — существующие клиенты продолжат
+    #    работать без переимпорта.
+    if [ "$UPDATE" = 1 ]; then
+        log "Обновление слоя AmneziaWG (код и сервисы; конфиги и обфускация НЕ меняются)"
+        install_awg
+        deploy_overlay
+        # берём режим/интерфейсы из уже установленного services.env (не перегенерируем)
+        if [ -f "$SERVICES" ]; then
+            # shellcheck disable=SC1090
+            . "$SERVICES"
+            AZ_IFACE="${AZ_IFACE:-antizapret}"; VPN_IFACE="${VPN_IFACE:-vpn}"
+            [ "${MODE:-replace}" = keep ] && KEEP_WG=1
+        else
+            plan_services
+        fi
+        handle_wireguard        # погасить ванильный wg, если апдейт AntiZapret его вернул
+        "$DEST/awg-reintegrate.sh" 2>/dev/null || true   # поднять awg-интерфейсы, если легли
+        log "✅ Код обновлён. Обфускация и клиенты не тронуты."
+        return
+    fi
+
     log "Слой AmneziaWG 2.0 поверх AntiZapret (режим: $([ "$KEEP_WG" = 1 ] && echo keep || echo replace))"
     install_awg
     deploy_overlay

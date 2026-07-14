@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awg_bot.py — Telegram-бот управления AntiZapret-AWG 2.0. Полностью кнопочный
-(единственная команда /start).
-
-Структура меню:
-  /start → главное меню:
-     👥 Клиенты   → ➕AmneziaWG · ➕OpenVPN · ⏳Временный · 📋Список
-                    Список → клиент кнопкой → ℹ️Информация · 📥Скачать · 🗑Удалить
-     ℹ️ Информация → серверная панель (CPU/RAM/диск/сеть, онлайн, топ-5, трафик)
-     🛡 Обфускация · 💾 Бэкап · ♻️ Восстановить
-
-Доступ по whitelist chat_id. Конфиг через systemd Environment=.
+awg_bot.py — Telegram-бот управления AntiZapret-AWG 2.0.
+Полностью кнопочный (единственная команда /start). Старается жить одним
+сообщением: каждое нажатие РЕДАКТИРУЕТ текущее сообщение, а не шлёт новое.
+Файлы (конфиги/QR/бэкап) — отдельными сообщениями (их редактировать нельзя).
 """
 
 import asyncio
@@ -22,12 +15,14 @@ import re
 import socket
 import subprocess
 import sys
+import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Message, FSInputFile, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -100,20 +95,29 @@ def kb(rows) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows])
 
 
-async def edit_or_send(c: CallbackQuery, text: str, markup: InlineKeyboardMarkup):
-    """Обновить текущее сообщение (а не слать новое). Метка времени гарантирует
-    отличие текста, чтобы Telegram не ругался 'message is not modified'."""
-    import time as _t
-    from aiogram.exceptions import TelegramBadRequest
-    stamped = text + f"\n\n<i>обновлено {_t.strftime('%H:%M:%S')}</i>"
-    try:
-        await c.message.edit_text(stamped, parse_mode="HTML", reply_markup=markup)
-    except TelegramBadRequest:
-        await c.message.answer(stamped, parse_mode="HTML", reply_markup=markup)
-
-
 def back(cb="menu:main"):
     return [("⬅️ Назад", cb)]
+
+
+async def show(c: CallbackQuery, text: str, markup: InlineKeyboardMarkup, stamp: bool = False):
+    """Редактировать текущее сообщение (жить одним сообщением). Если нельзя
+    (текст не изменился / предыдущее — не текстовое после файла) — послать новое."""
+    if stamp:
+        text = f"{text}\n\n<i>обновлено {time.strftime('%H:%M:%S')}</i>"
+    try:
+        await c.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except TelegramBadRequest:
+        try:
+            await c.message.answer(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ── меню ──────────────────────────────────────────────────────────────────────
+
+def menu_header() -> str:
+    return (f"🔐 <b>AntiZapret-AWG 2.0</b> · <code>{html.escape(server_host())}</code>\n"
+            "Выбери действие:")
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -134,12 +138,16 @@ def clients_menu() -> InlineKeyboardMarkup:
     ])
 
 
-def menu_header() -> str:
-    return (f"🔐 <b>AntiZapret-AWG 2.0</b> · <code>{html.escape(server_host())}</code>\n"
-            "Выбери действие:")
+def client_menu(svc: str, name: str) -> InlineKeyboardMarkup:
+    return kb([
+        [("ℹ️ Информация", f"clinfo:{svc}:{name}")],
+        [("📥 Скачать конфиг", f"cldl:{svc}:{name}")],
+        [("🗑 Удалить", f"cldel:{svc}:{name}")],
+        [("⬅️ К списку", "clients:list")],
+    ])
 
 
-# ── списки клиентов ──────────────────────────────────────────────────────────
+# ── списки ────────────────────────────────────────────────────────────────────
 
 def awg_names(svc: str) -> list:
     rc, out, _ = run([CLIENT_SH, "list", svc])
@@ -152,7 +160,7 @@ def ovpn_names() -> list:
             if NAME_RE.match(s.strip()) and s.strip() != "antizapret-server"]
 
 
-# ── отправка артефактов ──────────────────────────────────────────────────────
+# ── отправка артефактов (отдельными сообщениями) ─────────────────────────────
 
 async def send_awg_files(chat: int, svc: str, name: str):
     base = os.path.join(CLIENT_DIR, svc, f"{svc}-{name}")
@@ -165,10 +173,10 @@ async def send_awg_files(chat: int, svc: str, name: str):
                              caption="📱 QR — отсканируй в приложении AmneziaWG")
     if os.path.exists(vpn):
         uri = open(vpn, encoding="utf-8").read().strip()
-        await bot.send_message(chat, "🔗 <b>Ссылка vpn:// для приложения Amnezia</b> "
-                               "(скопируй, вставь «из буфера»):", parse_mode="HTML")
-        for c in (uri[i:i + 3800] for i in range(0, len(uri), 3800)):
-            await bot.send_message(chat, f"<code>{html.escape(c)}</code>", parse_mode="HTML")
+        await bot.send_message(chat, "🔗 <b>Ссылка vpn:// для приложения Amnezia</b>:",
+                               parse_mode="HTML")
+        for chunk in (uri[i:i + 3800] for i in range(0, len(uri), 3800)):
+            await bot.send_message(chat, f"<code>{html.escape(chunk)}</code>", parse_mode="HTML")
 
 
 async def send_ovpn_files(chat: int, name: str):
@@ -194,11 +202,7 @@ async def cmd_start(m: Message, state: FSMContext):
     await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
 
 
-async def show_menu(target):
-    await target.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
-
-
-# ── ввод имени клиента (единственный текстовый шаг) ──────────────────────────
+# ── ввод имени клиента ───────────────────────────────────────────────────────
 
 @dp.message(Flow.name, F.text)
 async def on_name(m: Message, state: FSMContext):
@@ -209,67 +213,71 @@ async def on_name(m: Message, state: FSMContext):
         return await m.answer("Имя: 1–32 символа (буквы, цифры, _ , -). Ещё раз:")
     data = await state.get_data()
     await state.clear()
+    mid = data.get("_mid")
+    try:
+        await m.delete()                     # убрать введённое имя — меньше сообщений
+    except Exception:  # noqa: BLE001
+        pass
+
+    async def upd(text, markup=None):        # редактируем исходное сообщение диалога
+        if mid:
+            try:
+                return await bot.edit_message_text(text, m.chat.id, mid,
+                                                   parse_mode="HTML", reply_markup=markup)
+            except Exception:  # noqa: BLE001
+                pass
+        await m.answer(text, parse_mode="HTML", reply_markup=markup)
+
     kind = data.get("kind")
     if kind in ("awg", "temp_awg"):
         svc = data["svc"]; ttl = data.get("ttl")
-        await m.answer(f"⏳ Создаю {html.escape(name)} ({svc}{', '+ttl if ttl else ''})…")
+        await upd(f"⏳ Создаю <b>{html.escape(name)}</b> ({svc})…")
         cmd = [CLIENT_SH, "add", name, svc] + (["--ttl", ttl] if ttl else [])
         rc, out, err = run(cmd)
         if rc != 0:
-            await m.answer(f"❌ {html.escape(err or out)}", parse_mode="HTML")
-        else:
-            await send_awg_files(m.chat.id, svc, name)
-            if ttl:
-                await m.answer(f"⏳ Удалится через {ttl}.")
+            return await upd(f"❌ {html.escape(err or out)}", main_menu())
+        await send_awg_files(m.chat.id, svc, name)
+        await upd(f"✅ <b>{html.escape(name)}</b> ({svc}) готов"
+                  + (f" · удалится через {ttl}" if ttl else ""), main_menu())
     elif kind in ("ovpn", "temp_ovpn"):
         days = data["days"]
-        await m.answer(f"⏳ Создаю OpenVPN {html.escape(name)} ({days}д)…")
+        await upd(f"⏳ Создаю OpenVPN <b>{html.escape(name)}</b> ({days}д)…")
         rc, out, err = run([UPSTREAM_SH, "1", name, days], timeout=300)
         if rc != 0:
-            await m.answer(f"❌ {html.escape(err or out)[:900]}", parse_mode="HTML")
-        else:
-            await send_ovpn_files(m.chat.id, name)
-    await show_menu(m)
+            return await upd(f"❌ {html.escape(err or out)[:900]}", main_menu())
+        await send_ovpn_files(m.chat.id, name)
+        await upd(f"✅ OpenVPN <b>{html.escape(name)}</b> готов", main_menu())
 
 
 async def ask_name(c: CallbackQuery, state: FSMContext, **data):
     await state.set_state(Flow.name)
+    data["_mid"] = c.message.message_id      # чтобы дальше редактировать это же сообщение
     await state.set_data(data)
-    await c.message.answer("✍️ Введи имя клиента (буквы, цифры, _ , -):",
-                           reply_markup=kb([[("✖️ Отмена", "menu:main")]]))
+    await show(c, "✍️ Введи имя клиента (буквы, цифры, _ , -):",
+               kb([[("✖️ Отмена", "menu:main")]]))
 
 
-# ── per-client submenu ───────────────────────────────────────────────────────
-
-def client_menu(svc: str, name: str) -> InlineKeyboardMarkup:
-    return kb([
-        [("ℹ️ Информация", f"clinfo:{svc}:{name}")],
-        [("📥 Скачать конфиг", f"cldl:{svc}:{name}")],
-        [("🗑 Удалить", f"cldel:{svc}:{name}")],
-        [("⬅️ К списку", "clients:list")],
-    ])
-
-
-# ── все callbacks ─────────────────────────────────────────────────────────────
+# ── все callbacks (через show() — редактирование одного сообщения) ───────────
 
 @dp.callback_query()
 async def on_cb(c: CallbackQuery, state: FSMContext):
     if not is_admin(c.message.chat.id):
         return await c.answer("⛔️", show_alert=True)
     d = c.data or ""
+    await c.answer()
 
     if d == "menu:main":
-        await state.clear(); await show_menu(c.message); return await c.answer()
+        await state.clear()
+        return await show(c, menu_header(), main_menu())
 
-    # ── информация о сервере ──
     if d == "info:server":
-        await edit_or_send(c, stats("server"),
-                           kb([[("🔄 Обновить", "info:server")], back()]))
+        return await show(c, stats("server"),
+                          kb([[("🔄 Обновить", "info:server")], back()]), stamp=True)
 
-    # ── меню клиентов ──
-    elif d == "clients:menu":
-        await c.message.answer("👥 <b>Клиенты</b>", parse_mode="HTML", reply_markup=clients_menu())
-    elif d == "clients:list":
+    if d == "clients:menu":
+        return await show(c, "👥 <b>Клиенты</b>", clients_menu())
+
+    if d == "clients:list":
         az = [("antizapret", n) for n in awg_names("antizapret")]
         vp = [("vpn", n) for n in awg_names("vpn")]
         ov = [("ovpn", n) for n in ovpn_names()]
@@ -280,25 +288,28 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         if not rows:
             rows = [[("(клиентов нет)", "clients:menu")]]
         rows.append(back("clients:menu"))
-        await c.message.answer("Выбери клиента:", reply_markup=kb(rows))
-    elif d.startswith("cli:"):
+        return await show(c, "Выбери клиента:", kb(rows))
+
+    if d.startswith("cli:"):
         _, svc, name = d.split(":", 2)
         tag = {"antizapret": "AmneziaWG · AntiZapret", "vpn": "AmneziaWG · Полный VPN",
                "ovpn": "OpenVPN"}.get(svc, svc)
-        await c.message.answer(f"👤 <b>{html.escape(name)}</b>\n{tag}",
-                               parse_mode="HTML", reply_markup=client_menu(svc, name))
-    elif d.startswith("clinfo:"):
+        return await show(c, f"👤 <b>{html.escape(name)}</b>\n{tag}", client_menu(svc, name))
+
+    if d.startswith("clinfo:"):
         _, svc, name = d.split(":", 2)
         if svc == "ovpn":
-            await c.message.answer(f"📄 OpenVPN-клиент <b>{html.escape(name)}</b>\n"
-                                   "(детальная статистика доступна для AmneziaWG)",
-                                   parse_mode="HTML", reply_markup=kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
-        else:
-            await edit_or_send(c, stats("client", name),
-                               kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
-                                   [("⬅️ Назад", f"cli:{svc}:{name}")]]))
-    elif d.startswith("cldl:"):
+            return await show(c, f"📄 OpenVPN-клиент <b>{html.escape(name)}</b>\n"
+                              "(детальная статистика — для AmneziaWG)",
+                              kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
+        return await show(c, stats("client", name),
+                          kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
+                              [("⬅️ Назад", f"cli:{svc}:{name}")]]), stamp=True)
+
+    if d.startswith("cldl:"):
         _, svc, name = d.split(":", 2)
+        await show(c, f"📥 Отправляю конфиг <b>{html.escape(name)}</b>…",
+                   kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
         if svc == "ovpn":
             await send_ovpn_files(c.message.chat.id, name)
         else:
@@ -307,92 +318,83 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
                 run([PY, EXPORT_PY, conf, "--name", f"{svc}-{name}",
                      "--outdir", os.path.dirname(conf), "--all"])
             await send_awg_files(c.message.chat.id, svc, name)
-        await c.message.answer("Готово.", reply_markup=kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
-    elif d.startswith("cldel:"):
+        return
+
+    if d.startswith("cldel:"):
         _, svc, name = d.split(":", 2)
         if svc == "ovpn":
             rc, out, err = run([UPSTREAM_SH, "2", name], timeout=120)
         else:
             rc, out, err = run([CLIENT_SH, "del", name, svc])
-        await c.message.answer(f"🗑 Удалён: {html.escape(name)}" if rc == 0
-                               else f"❌ {html.escape(err or out)[:500]}", parse_mode="HTML",
-                               reply_markup=kb([[("⬅️ К списку", "clients:list")]]))
+        txt = (f"🗑 Удалён: {html.escape(name)}" if rc == 0
+               else f"❌ {html.escape(err or out)[:500]}")
+        return await show(c, txt, kb([[("⬅️ К списку", "clients:list")], back()]))
 
-    # ── создание AmneziaWG ──
-    elif d == "awg:menu":
-        await c.message.answer("AmneziaWG — тип:", reply_markup=kb([
+    if d == "awg:menu":
+        return await show(c, "AmneziaWG — тип:", kb([
             [("🌐 AntiZapret (split)", "awgsvc:antizapret")],
             [("🔒 Полный VPN", "awgsvc:vpn")], back("clients:menu")]))
-    elif d.startswith("awgsvc:"):
-        await ask_name(c, state, kind="awg", svc=d.split(":", 1)[1])
+    if d.startswith("awgsvc:"):
+        return await ask_name(c, state, kind="awg", svc=d.split(":", 1)[1])
 
-    # ── создание OpenVPN ──
-    elif d == "ovpn:menu":
-        await c.message.answer("OpenVPN — срок сертификата:", reply_markup=kb([
+    if d == "ovpn:menu":
+        return await show(c, "OpenVPN — срок сертификата:", kb([
             [("1 год", "ovpndays:365"), ("3 года", "ovpndays:1095")],
             [("10 лет", "ovpndays:3650")], back("clients:menu")]))
-    elif d.startswith("ovpndays:"):
-        await ask_name(c, state, kind="ovpn", days=d.split(":", 1)[1])
+    if d.startswith("ovpndays:"):
+        return await ask_name(c, state, kind="ovpn", days=d.split(":", 1)[1])
 
-    # ── временный ──
-    elif d == "temp:menu":
-        await c.message.answer("Временный клиент — тип:", reply_markup=kb([
+    if d == "temp:menu":
+        return await show(c, "Временный клиент — тип:", kb([
             [("🌐 AWG AntiZapret", "temptype:antizapret")],
             [("🔒 AWG Полный VPN", "temptype:vpn")],
             [("📄 OpenVPN", "temptype:ovpn")], back("clients:menu")]))
-    elif d.startswith("temptype:"):
+    if d.startswith("temptype:"):
         t = d.split(":", 1)[1]
         if t == "ovpn":
-            await c.message.answer("Срок (OpenVPN — сертификат):", reply_markup=kb([
+            return await show(c, "Срок (OpenVPN — сертификат):", kb([
                 [("1 день", "tempod:1"), ("7 дней", "tempod:7")],
                 [("30 дней", "tempod:30")], back("clients:menu")]))
-        else:
-            await c.message.answer("Время жизни (авто-удаление):", reply_markup=kb([
-                [("1 час", f"tempad:{t}:1h"), ("6 часов", f"tempad:{t}:6h")],
-                [("1 день", f"tempad:{t}:1d"), ("7 дней", f"tempad:{t}:7d")],
-                [("30 дней", f"tempad:{t}:30d")], back("clients:menu")]))
-    elif d.startswith("tempad:"):
+        return await show(c, "Время жизни (авто-удаление):", kb([
+            [("1 час", f"tempad:{t}:1h"), ("6 часов", f"tempad:{t}:6h")],
+            [("1 день", f"tempad:{t}:1d"), ("7 дней", f"tempad:{t}:7d")],
+            [("30 дней", f"tempad:{t}:30d")], back("clients:menu")]))
+    if d.startswith("tempad:"):
         _, svc, ttl = d.split(":")
-        await ask_name(c, state, kind="temp_awg", svc=svc, ttl=ttl)
-    elif d.startswith("tempod:"):
-        await ask_name(c, state, kind="temp_ovpn", days=d.split(":", 1)[1])
+        return await ask_name(c, state, kind="temp_awg", svc=svc, ttl=ttl)
+    if d.startswith("tempod:"):
+        return await ask_name(c, state, kind="temp_ovpn", days=d.split(":", 1)[1])
 
-    # ── обфускация ──
-    elif d == "obf:menu":
-        await c.message.answer("Обфускация:", reply_markup=kb([
+    if d == "obf:menu":
+        return await show(c, "🛡 Обфускация:", kb([
             [("👁 Показать", "obf:show")], [("🔄 Перегенерировать", "obf:regen")], back()]))
-    elif d == "obf:show":
+    if d == "obf:show":
         rc, out, err = run([OBF_SH, "--show"])
-        await c.message.answer(f"🛡 <code>{html.escape((out or err)[:3500])}</code>",
-                               parse_mode="HTML", reply_markup=kb([back()]))
-    elif d == "obf:regen":
-        await c.message.answer("⏳ Перегенерация…")
+        return await show(c, f"🛡 <code>{html.escape((out or err)[:3500])}</code>",
+                          kb([back("obf:menu")]))
+    if d == "obf:regen":
+        await show(c, "⏳ Перегенерация профиля…", kb([back("obf:menu")]))
         rc, out, err = run([OBF_SH, "--regenerate"], timeout=120)
         if rc == 0:
             run([CLIENT_SH, "regen-all"], timeout=180)
-            await c.message.answer("✅ Новый профиль применён, конфиги пересозданы. "
-                                   "Клиентам нужно переимпортировать конфиги.")
-        else:
-            await c.message.answer(f"❌ {html.escape(err or out)}", parse_mode="HTML")
-        await show_menu(c.message)
+            return await show(c, "✅ Новый профиль применён, конфиги пересозданы.\n"
+                              "Клиентам нужно переимпортировать конфиги.", kb([back("obf:menu")]))
+        return await show(c, f"❌ {html.escape(err or out)[:800]}", kb([back("obf:menu")]))
 
-    # ── бэкап/восстановление ──
-    elif d == "backup:run":
-        await c.message.answer("💾 Создаю бэкап…")
+    if d == "backup:run":
+        await show(c, "💾 Создаю бэкап…", kb([back()]))
         rc, out, err = run([BACKUP_SH, "backup"], timeout=300)
         path = out.splitlines()[-1].strip() if out else ""
         if rc == 0 and os.path.exists(path):
             await bot.send_document(c.message.chat.id, FSInputFile(path, filename=os.path.basename(path)),
                                     caption="✅ Бэкап (OpenVPN + AmneziaWG + конфиги + статистика)")
-        else:
-            await c.message.answer(f"❌ {html.escape(err or out)[:800]}", parse_mode="HTML")
-        await show_menu(c.message)
-    elif d == "restore:ask":
-        _pending_restore.add(c.message.chat.id)
-        await c.message.answer("♻️ Пришли файл бэкапа (.tar.gz) следующим сообщением.",
-                               reply_markup=kb([[("✖️ Отмена", "menu:main")]]))
+            return await show(c, "✅ Бэкап отправлен.", kb([back()]))
+        return await show(c, f"❌ {html.escape(err or out)[:800]}", kb([back()]))
 
-    await c.answer()
+    if d == "restore:ask":
+        _pending_restore.add(c.message.chat.id)
+        return await show(c, "♻️ Пришли файл бэкапа (.tar.gz) следующим сообщением.",
+                          kb([[("✖️ Отмена", "menu:main")]]))
 
 
 # ── приём файла бэкапа ───────────────────────────────────────────────────────
@@ -408,12 +410,13 @@ async def on_document(m: Message):
     dst = f"/tmp/awg-restore-{m.chat.id}.tar.gz"
     f = await bot.get_file(m.document.file_id)
     await bot.download_file(f.file_path, dst)
-    await m.answer("♻️ Восстанавливаю и перезапускаю сервисы…")
+    note = await m.answer("♻️ Восстанавливаю и перезапускаю сервисы…")
     rc, out, err = run([BACKUP_SH, "restore", dst], timeout=300)
     if os.path.exists(dst):
         os.remove(dst)
-    await m.answer("✅ Восстановлено." if rc == 0 else f"❌ {html.escape(err or out)[:800]}",
-                   parse_mode="HTML", reply_markup=main_menu())
+    await note.edit_text("✅ Восстановлено." if rc == 0 else f"❌ {html.escape(err or out)[:800]}",
+                         parse_mode="HTML")
+    await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
 
 
 async def main():

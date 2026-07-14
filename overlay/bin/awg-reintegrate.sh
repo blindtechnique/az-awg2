@@ -53,12 +53,15 @@ if [ "$MODE" = replace ]; then
     done
 fi
 
-# 4. наши awg-quick@ должны быть включены и подняты
+# 4. наши awg-quick@ должны быть подняты И быть типа amneziawg. Проверяем ТИП
+#    интерфейса напрямую (ip -d link), а не systemd-состояние: ванильный wg-quick мог
+#    создать интерфейс с тем же именем (тип wireguard), и тогда awg show пустой.
 for i in "$AZ_IFACE" "$VPN_IFACE"; do
     systemctl enable "awg-quick@$i" 2>/dev/null || true
-    if ! ip link show "$i" >/dev/null 2>&1; then
-        ip link del "$i" 2>/dev/null || true
-        systemctl start "awg-quick@$i" 2>/dev/null && log "поднят awg-quick@$i" \
+    if ! ip -d link show "$i" 2>/dev/null | grep -q amneziawg; then
+        systemctl stop "awg-quick@$i" 2>/dev/null || true
+        ip link del "$i" 2>/dev/null || true     # снести любой (в т.ч. wireguard) интерфейс
+        systemctl start "awg-quick@$i" 2>/dev/null && log "поднят awg-quick@$i (amneziawg)" \
             || log "не удалось поднять awg-quick@$i"
     fi
 done
