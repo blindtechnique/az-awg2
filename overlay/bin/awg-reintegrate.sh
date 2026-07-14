@@ -87,6 +87,8 @@ if [ "$MODE" = keep ]; then
             || iptables -w -A INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null || true
     done
     log "keep: живой редирект 52xxx снят, порты 52443/52080 открыты"
+    # DNS: вернуть view для keep-подсетей в kresd.conf (обновление AntiZapret его затирает)
+    [ -x "$DEST/awg-knot-view.sh" ] && "$DEST/awg-knot-view.sh" 2>/dev/null || true
 fi
 
 exit 0
