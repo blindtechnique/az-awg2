@@ -108,6 +108,7 @@ deploy_overlay() {
     cp "$OVERLAY/obfuscation/awg_obfuscate.py" "$OVERLAY/bin/awg-obfuscation.sh" \
        "$OVERLAY/bin/awg-export.py" "$OVERLAY/bin/client-awg.sh" \
        "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg-reintegrate.sh" \
+       "$OVERLAY/bin/awg-knot-view.sh" \
        "$OVERLAY/bin/awg_stats.py" "$DEST/" 2>/dev/null || true
     chmod +x "$DEST"/*.sh "$DEST"/*.py 2>/dev/null || true
     ln -sf "$DEST/awg-obfuscation.sh" /usr/local/bin/awg-obfuscation
@@ -250,6 +251,9 @@ patch_up_for_keep() {
         sed -i '/^# WireGuard\/AmneziaWG port redirection/i iptables -w -A INPUT -p udp --dport 52443 -j ACCEPT\niptables -w -A INPUT -p udp --dport 52080 -j ACCEPT' "$up" 2>/dev/null || true
     fi
     log "up.sh: убран редирект 52xxx→51xxx, открыты порты 52443/52080 (keep-режим)"
+    # DNS: добавить в knot view для наших keep-подсетей (.9), иначе имя сервера
+    # у этих клиентов резолвится неверно
+    "$DEST/awg-knot-view.sh" 2>/dev/null || true
 }
 
 patch_client_sh() {
