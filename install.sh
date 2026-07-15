@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # install.sh — установщик AntiZapret-AWG 2.0.
 #
-# МОДЕЛЬ (надёжная, без гонок с перезагрузкой): скрипт ставит слой настоящего
-# AmneziaWG 2.0 ПОВЕРХ уже установленного AntiZapret. Базовый AntiZapret и его
-# перезагрузка — отдельный шаг, не смешивается с нашим слоем.
+# МОДЕЛЬ: слой настоящего AmneziaWG 2.0 ПАРАЛЛЕЛЬНО уже установленному AntiZapret.
+# Ванильный AntiZapret не трогается ни байтом: wg-quick, порты 51443/51080,
+# редиректы 540/580 и 52xxx, client.sh, админ-панели — всё работает штатно.
+# AmneziaWG живёт на своих интерфейсах antizapret-awg/vpn-awg, своих подсетях
+# (третий октет +1) и своём UDP-порту (рандомный, выбирается один раз и
+# закрепляется навсегда — или задаётся вручную).
 #
 # Использование:
 #   1) если AntiZapret ещё НЕ установлен — сначала поставь базу (она перезагрузит сервер):
@@ -13,14 +16,17 @@
 #        bash <(curl -fsSL https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh)
 #
 # Флаги слоя AmneziaWG:
-#   --keep-wireguard   оставить ванильный WireGuard активным (AWG на портах 52443/52080),
-#                      по умолчанию WG заменяется на AmneziaWG на тех же портах 51443/51080
+#   --awg-ports A,V    зафиксировать порты вручную (antizapret,vpn),
+#                      по умолчанию — рандомные свободные с закреплением
 #   --preset X --template Y --fp Z   обфускация без вопросов
 #   --no-bot           не спрашивать про Telegram-бота
-#   --update           обновить код/бот/самовосстановление БЕЗ смены обфускации
-#                      и без пересборки клиентов (существующие клиенты не ломаются)
+#   --update           обновить код/бот/самовосстановление БЕЗ смены обфускации,
+#                      портов и клиентов (существующие клиенты не ломаются)
 #   --reconfigure      переспросить параметры заново (генерирует НОВЫЙ профиль
-#                      обфускации → клиентам нужно переимпортировать конфиги)
+#                      обфускации → клиентам нужно переимпортировать конфиги;
+#                      порты при этом НЕ меняются)
+#   --migrate          миграция со старых режимов replace/keep на parallel
+#                      (ключи клиентов сохраняются, конфиги нужно раздать заново)
 set -euo pipefail
 
 REPO_URL="https://github.com/fageoner/Antizapret-AWG-2.0"
@@ -29,8 +35,8 @@ UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
 DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
-INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; KEEP_WG=0; UPDATE=0
-CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""
+INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
+CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
 
 # ── самозагрузка (curl|bash): клонируем и re-exec, с защитой от зацикливания ──
 SELF="${BASH_SOURCE[0]:-$0}"
@@ -51,12 +57,16 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --install-base) INSTALL_BASE=1; shift ;;
         --update) UPDATE=1; shift ;;
-        --keep-wireguard) KEEP_WG=1; shift ;;
+        --migrate) MIGRATE=1; shift ;;
+        --awg-ports) CLI_PORTS="$2"; shift 2 ;;
         --no-bot) NO_BOT=1; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
         --preset) CLI_PRESET="$2"; shift 2 ;;
         --template) CLI_TEMPLATE="$2"; shift 2 ;;
         --fp) CLI_FP="$2"; shift 2 ;;
+        --keep-wireguard)  # legacy: parallel теперь единственный режим
+            echo "[install] --keep-wireguard устарел: параллельный режим теперь единственный." >&2
+            shift ;;
         -h|--help) grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "Неизвестный флаг: $1" >&2; exit 2 ;;
     esac
@@ -70,6 +80,13 @@ base_installed() {
     # (не зависим от формата вывода systemctl, который подводил на свежих серверах)
     [ -f /root/antizapret/client.sh ] || [ -f /root/antizapret/up.sh ]
 }
+
+# зарезервировано ванилью: WG 51443/51080, «-am» редирект 52443/52080, резерв WG
+# 540/580, резерв OpenVPN 80/443/504/508, реальный OpenVPN 50080/50443, 1194, 53, 22
+RESERVED_PORTS="22 53 80 443 504 508 540 580 1194 50080 50443 51080 51443 52080 52443"
+port_reserved() { printf '%s\n' $RESERVED_PORTS | grep -qx "$1"; }
+port_busy() { ss -lunH 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' | grep -qx "$1"; }
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 
 # ════════════════════════════════════════════════════════════════════════════
 #  ШАГ 1 (опционально): установка базового AntiZapret (перезагружает сервер)
@@ -109,19 +126,49 @@ install_base() {
     log "Применён обход GPG-ключа OpenVPN/knot (известная проблема upstream)"
     echo
     log "Запускается базовый setup.sh. Отвечай на его вопросы (WireGuard включи — он"
-    log "станет базой для AmneziaWG; OpenVPN оставь). В конце сервер ПЕРЕЗАГРУЗИТСЯ."
-    log "После перезагрузки поставь слой AmneziaWG:  bash install.sh"
+    log "останется работать параллельно с AmneziaWG; OpenVPN оставь). В конце сервер"
+    log "ПЕРЕЗАГРУЗИТСЯ. После перезагрузки поставь слой AmneziaWG:  bash install.sh"
     echo
     bash "$tmp/AntiZapret-VPN/setup.sh"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-#  ШАГ 2: слой AmneziaWG поверх установленного AntiZapret (без перезагрузки)
+#  ШАГ 2: слой AmneziaWG параллельно установленному AntiZapret (без перезагрузки)
 # ════════════════════════════════════════════════════════════════════════════
+parse_cli_ports() {  # "1234,5678" → AZ_PORT_CHOICE/VPN_PORT_CHOICE
+    AZ_PORT_CHOICE="${CLI_PORTS%%,*}"; VPN_PORT_CHOICE="${CLI_PORTS##*,}"
+    if ! valid_port "$AZ_PORT_CHOICE" || ! valid_port "$VPN_PORT_CHOICE" \
+        || [ "$AZ_PORT_CHOICE" = "$VPN_PORT_CHOICE" ]; then
+        log "❌ --awg-ports: нужно два разных порта 1-65535 через запятую, напр. 34567,45678"
+        exit 2
+    fi
+}
+
+ask_port() {  # ask_port <подпись> <исключить> → PORT_ANSWER ("" = авто)
+    local label="$1" excl="$2" p
+    while :; do
+        read -rp "    Порт $label (Enter = авто/рандом): " p
+        [ -z "$p" ] && { PORT_ANSWER=""; return; }
+        valid_port "$p" || { echo "    Некорректный порт (1-65535)"; continue; }
+        [ "$p" = "$excl" ] && { echo "    Совпадает с другим портом AWG"; continue; }
+        if port_reserved "$p"; then
+            read -rp "    ⚠️ Порт $p зарезервирован AntiZapret (WG/OpenVPN/редиректы). Всё равно использовать? [y/N]: " a
+            case "${a:-N}" in y|Y) ;; *) continue ;; esac
+        elif port_busy "$p"; then
+            read -rp "    ⚠️ Порт $p уже слушается на сервере. Всё равно использовать? [y/N]: " a
+            case "${a:-N}" in y|Y) ;; *) continue ;; esac
+        fi
+        PORT_ANSWER="$p"; return
+    done
+}
+
 collect_choices() {
+    AZ_PORT_CHOICE=""; VPN_PORT_CHOICE=""
+    [ -n "$CLI_PORTS" ] && parse_cli_ports
     if [ -f "$STATE" ] && [ "$RECONFIGURE" != 1 ] && [ -z "$CLI_PRESET" ]; then
         . "$STATE"
-        [ "${AWG_KEEP_WG:-0}" = 1 ] && KEEP_WG=1
+        # порты при повторном запуске всегда берутся из services.env (закреплены) —
+        # ответы из state здесь не применяем, чтобы не «переехать» случайно
         log "Использую сохранённые ответы (обфускация ${AWG_PRESET:-medium}/${AWG_TEMPLATE:-default}, бот $([ "${AWG_BOT_INSTALL:-0}" = 1 ] && echo да || echo нет)). Сброс: --reconfigure"
         return
     fi
@@ -152,13 +199,15 @@ collect_choices() {
         read -rp "  Выбор [1]: " dm; case "${dm:-1}" in
             2) read -rp "    Домен (напр. yandex.ru): " HOST;; *) HOST="";;
         esac
-        if [ "$KEEP_WG" = 0 ]; then
+        if [ -z "$CLI_PORTS" ]; then
             echo
-            echo "  Ванильный WireGuard: по умолчанию заменяется на AmneziaWG (те же порты"
-            echo "  51443/51080). Оставить ванильный WG активным ПАРАЛЛЕЛЬНО (AmneziaWG"
-            echo "  тогда на портах 52443/52080)?"
-            read -rp "  Оставить ванильный WireGuard? [y/N]: " kw
-            case "${kw:-N}" in y|Y) KEEP_WG=1;; esac
+            echo "  UDP-порты AmneziaWG: по умолчанию выбираются РАНДОМНО из свободных"
+            echo "  (рекомендуется: не пересекаются с ванилью и хуже поддаются сканированию)"
+            echo "  и закрепляются навсегда. Можно задать свои."
+            ask_port "antizapret (split-туннель)" ""
+            AZ_PORT_CHOICE="$PORT_ANSWER"
+            ask_port "vpn (полный туннель)" "$AZ_PORT_CHOICE"
+            VPN_PORT_CHOICE="$PORT_ANSWER"
         fi
     fi
     if [ "$NO_BOT" = 0 ]; then
@@ -178,7 +227,6 @@ AWG_FP='$FP'
 AWG_BOT_INSTALL='$BOT_INSTALL'
 AWG_BOT_TOKEN='$BOT_TOKEN'
 AWG_BOT_ADMINS='$BOT_ADMINS'
-AWG_KEEP_WG='$KEEP_WG'
 AWG_MTU='$MTU'
 AWG_HOST='$HOST'
 EOF
@@ -212,30 +260,29 @@ awg_layer() {
     [ -f "$STATE" ] && . "$STATE"
     local P="${AWG_PRESET:-medium}" T="${AWG_TEMPLATE:-}" F="${AWG_FP:-chrome}"
     local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}"
-    log "Слой AmneziaWG 2.0 (обфускация $P/${T:-default}, MTU $M$([ "$KEEP_WG" = 1 ] && echo ', WG сохранён'))…"
+    log "Слой AmneziaWG 2.0 параллельно ванили (обфускация $P/${T:-default}, MTU $M)…"
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
-        $([ "$KEEP_WG" = 1 ] && echo --keep-wireguard)
+        ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
+        ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}
     setup_stats
     setup_bot
     echo
-    log "✅ Готово. Управление клиентами (OpenVPN и AmneziaWG) — через бота или:"
-    log "   awg-client add myphone antizapret"
+    log "✅ Готово. Ванильный AntiZapret работает как раньше, AmneziaWG 2.0 — параллельно."
+    log "   Порты AWG закреплены в /etc/amnezia/amneziawg/services.env"
+    log "   Управление клиентами — через бота или:  awg-client add myphone antizapret"
 }
 
-# ── обновление кода без переконфигурации (обфускация и клиенты не меняются) ───
+# ── обновление кода без переконфигурации (обфускация, порты и клиенты не меняются)
 update_layer() {
     base_installed || { log "AntiZapret не установлен — нечего обновлять"; exit 1; }
     if [ ! -f /etc/amnezia/amneziawg/services.env ]; then
         log "Слой AmneziaWG ещё не установлен. Запусти без --update для установки."
         exit 1
     fi
-    log "Обновление AntiZapret-AWG (код и сервисы; обфускация и клиенты НЕ трогаются)…"
-    # 1. overlay-скрипты, systemd-юниты, самовосстановление, хук — без regen обфускации
+    log "Обновление AntiZapret-AWG (код и сервисы; обфускация, порты и клиенты НЕ трогаются)…"
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --update
-    # 2. обновить юниты статистики/автоудаления
     setup_stats
-    # 3. обновить код бота (если установлен) и перезапустить
     if [ -f /etc/systemd/system/awg-bot.service ]; then
         mkdir -p "$DEST/bot"
         cp "$REPO_DIR/bot/awg_bot.py" "$DEST/bot/"
@@ -248,6 +295,32 @@ update_layer() {
     log "   переимпортировать конфиги НЕ нужно."
 }
 
+# ── миграция со старых режимов replace/keep на parallel ──────────────────────
+migrate_layer() {
+    if [ ! -f /etc/amnezia/amneziawg/services.env ]; then
+        log "Слой AmneziaWG не установлен — мигрировать нечего."
+        exit 1
+    fi
+    local cur; cur="$(. /etc/amnezia/amneziawg/services.env 2>/dev/null; echo "${MODE:-replace}")"
+    if [ "$cur" = parallel ]; then
+        log "Уже режим parallel — миграция не нужна."
+        exit 0
+    fi
+    echo
+    log "⚠️ Миграция режима '$cur' → parallel:"
+    log "   • ванильный WireGuard вернётся в исходное состояние (порты, редиректы);"
+    log "   • AmneziaWG переедет на интерфейсы antizapret-awg/vpn-awg и новый порт;"
+    log "   • ключи клиентов сохранятся, но КОНФИГИ ПРИДЁТСЯ РАЗДАТЬ ЗАНОВО"
+    [ "$cur" = replace ] && log "     (меняются порт Endpoint и туннельный IP)" \
+                         || log "     (меняется порт Endpoint)"
+    read -rp "Продолжить миграцию? [y/N]: " a
+    case "${a:-N}" in y|Y) ;; *) log "Отменено"; exit 0 ;; esac
+    [ -n "$CLI_PORTS" ] && parse_cli_ports
+    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --migrate \
+        ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
+        ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 main() {
     # чистим устаревший awg-resume от прошлых версий установщика (больше не нужен)
@@ -255,6 +328,10 @@ main() {
         systemctl disable --now awg-resume.service 2>/dev/null || true
         rm -f /etc/systemd/system/awg-resume.service
         systemctl daemon-reload 2>/dev/null || true
+    fi
+    if [ "$MIGRATE" = 1 ]; then
+        migrate_layer
+        exit 0
     fi
     if [ "$UPDATE" = 1 ]; then
         update_layer
@@ -267,7 +344,7 @@ main() {
     if ! base_installed; then
         echo
         log "AntiZapret не обнаружен (нет /root/antizapret/client.sh и up.sh)."
-        log "Это слой AmneziaWG — он ставится ПОВЕРХ AntiZapret."
+        log "Это слой AmneziaWG — он ставится ПАРАЛЛЕЛЬНО AntiZapret."
         log ""
         log "Поставь базу через этот же скрипт (важно: официальный установщик"
         log "GubernievS сейчас падает из-за просроченного GPG-ключа OpenVPN —"
@@ -277,7 +354,7 @@ main() {
         log "    bash install.sh                     # поставит слой AmneziaWG"
         exit 1
     fi
-    log "AntiZapret обнаружен — ставлю слой AmneziaWG 2.0 (без перезагрузки)"
+    log "AntiZapret обнаружен — ставлю слой AmneziaWG 2.0 параллельно (без перезагрузки)"
     collect_choices
     awg_layer
 }
