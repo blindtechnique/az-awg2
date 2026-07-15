@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# awg-knot-view.sh — добавляет в kresd.conf AntiZapret view:addr для keep-режимных
+# awg-knot-view.sh — добавляет в kresd.conf AntiZapret view:addr для наших
 # подсетей AmneziaWG (например 10.29.9/10.28.9), чтобы DNS отвечал этим клиентам
 # правильным шлюзом (иначе запрос имени сервера у .9-клиентов резолвится неверно).
 #
-# Нужно только в keep-режиме. В replace-режиме AmneziaWG использует те же подсети,
-# что и ванильный WG, и штатные view AntiZapret уже подходят — тогда скрипт ничего
-# не делает.
+# Нужно в режимах parallel и keep (свои подсети). В legacy replace-режиме
+# AmneziaWG использует те же подсети, что и ванильный WG, и штатные view
+# AntiZapret уже подходят — тогда скрипт ничего не делает.
 #
 # Патч /etc/knot-resolver/kresd.conf теряется при обновлении AntiZapret (оно
 # перезаписывает /etc), поэтому скрипт вызывается и из интеграции, и из
@@ -18,7 +18,7 @@ SERVICES=/etc/amnezia/amneziawg/services.env
 [ -f "$SERVICES" ] || exit 0
 # shellcheck disable=SC1090
 . "$SERVICES" 2>/dev/null || true
-[ "${MODE:-replace}" = keep ] || exit 0     # view нужны только в keep-режиме
+case "${MODE:-replace}" in parallel|keep) ;; *) exit 0 ;; esac   # свои подсети → нужен view
 
 out="$(python3 - "$KRESD" "${AZ_SUBNET:-10.29.9}" "${VPN_SUBNET:-10.28.9}" <<'PY' 2>/dev/null || true
 import re, sys
