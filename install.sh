@@ -27,6 +27,12 @@
 #                      порты при этом НЕ меняются)
 #   --migrate          миграция со старых режимов replace/keep на parallel
 #                      (ключи клиентов сохраняются, конфиги нужно раздать заново)
+#   --install-bot [T A]  доустановить Telegram-бот ПОСЛЕ установки слоя.
+#                      Токен и chat_id можно передать аргументами или ввести
+#                      интерактивно. Повторный запуск обновляет токен/админов.
+#   --bot-token X      токен бота для --install-bot без интерактива
+#   --bot-admins X     chat_id (через запятую) для --install-bot без интерактива
+#   --remove-bot       удалить только Telegram-бот (слой AmneziaWG остаётся)
 set -euo pipefail
 
 REPO_URL="https://github.com/fageoner/Antizapret-AWG-2.0"
@@ -36,7 +42,9 @@ DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
 INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
+INSTALL_BOT=0; REMOVE_BOT=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
+CLI_BOT_TOKEN=""; CLI_BOT_ADMINS=""
 
 # ── самозагрузка (curl|bash): клонируем и re-exec, с защитой от зацикливания ──
 SELF="${BASH_SOURCE[0]:-$0}"
@@ -58,6 +66,14 @@ while [ $# -gt 0 ]; do
         --install-base) INSTALL_BASE=1; shift ;;
         --update) UPDATE=1; shift ;;
         --migrate) MIGRATE=1; shift ;;
+        --install-bot)
+            INSTALL_BOT=1; shift
+            # опциональные позиционные: токен и chat_id (если не начинаются с --)
+            if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then CLI_BOT_TOKEN="$1"; shift; fi
+            if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then CLI_BOT_ADMINS="$1"; shift; fi ;;
+        --remove-bot) REMOVE_BOT=1; shift ;;
+        --bot-token) CLI_BOT_TOKEN="$2"; shift 2 ;;
+        --bot-admins) CLI_BOT_ADMINS="$2"; shift 2 ;;
         --awg-ports) CLI_PORTS="$2"; shift 2 ;;
         --no-bot) NO_BOT=1; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
@@ -243,17 +259,73 @@ setup_stats() {
     systemctl enable --now awg-stats.timer awg-expire.timer 2>/dev/null || true
 }
 
-setup_bot() {
-    [ "${AWG_BOT_INSTALL:-0}" = 1 ] || { log "Бот не выбран — пропуск"; return; }
+_deploy_bot() {  # _deploy_bot <token> <admins> — общая часть установки/обновления бота
+    local token="$1" admins="$2"
     log "Установка бота…"
     mkdir -p "$DEST/bot"; cp "$REPO_DIR/bot/awg_bot.py" "$DEST/bot/"
     [ -d "$DEST/venv" ] || python3 -m venv "$DEST/venv"
     "$DEST/venv/bin/pip" install -q -r "$REPO_DIR/bot/requirements.txt"
-    sed -e "s#PASTE_TOKEN_HERE#${AWG_BOT_TOKEN}#" \
-        -e "s#^Environment=AWG_BOT_ADMINS=.*#Environment=AWG_BOT_ADMINS=${AWG_BOT_ADMINS}#" \
+    sed -e "s#PASTE_TOKEN_HERE#${token}#" \
+        -e "s#^Environment=AWG_BOT_ADMINS=.*#Environment=AWG_BOT_ADMINS=${admins}#" \
         "$REPO_DIR/bot/awg-bot.service" > /etc/systemd/system/awg-bot.service
     systemctl daemon-reload; systemctl enable --now awg-bot
+    # запомним факт установки бота в state (для --update)
+    if [ -f "$STATE" ]; then
+        sed -i "s#^AWG_BOT_INSTALL=.*#AWG_BOT_INSTALL='1'#" "$STATE" 2>/dev/null \
+            || echo "AWG_BOT_INSTALL='1'" >> "$STATE"
+    fi
     log "Бот запущен. Напиши ему /start"
+}
+
+setup_bot() {  # вызывается из awg_layer при первичной установке (данные из STATE)
+    [ "${AWG_BOT_INSTALL:-0}" = 1 ] || { log "Бот не выбран — пропуск"; return; }
+    _deploy_bot "${AWG_BOT_TOKEN}" "${AWG_BOT_ADMINS}"
+}
+
+# ── доустановка бота ОТДЕЛЬНО, после установки слоя (--install-bot) ───────────
+install_bot_only() {
+    if [ ! -f /etc/amnezia/amneziawg/services.env ]; then
+        log "Слой AmneziaWG ещё не установлен. Сначала: bash install.sh"
+        exit 1
+    fi
+    local token="$CLI_BOT_TOKEN" admins="$CLI_BOT_ADMINS"
+    # ре-инсталл поверх существующего бота: подставим прошлые значения как дефолт
+    local prev_token="" prev_admins=""
+    if [ -f /etc/systemd/system/awg-bot.service ]; then
+        prev_token="$(grep -oP 'AWG_BOT_TOKEN=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
+        prev_admins="$(grep -oP 'AWG_BOT_ADMINS=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
+        log "Бот уже установлен — обновлю токен/админов (Enter = оставить текущее)."
+    fi
+    if [ -z "$token" ]; then
+        read -rp "  Токен бота (@BotFather)${prev_token:+ [оставить текущий]}: " token
+        [ -z "$token" ] && token="$prev_token"
+    fi
+    if [ -z "$admins" ]; then
+        read -rp "  chat_id админов (через запятую)${prev_admins:+ [$prev_admins]}: " admins
+        [ -z "$admins" ] && admins="$prev_admins"
+    fi
+    if [ -z "$token" ] || [ -z "$admins" ]; then
+        log "❌ Нужны и токен, и chat_id. Пример:"
+        log "   bash install.sh --install-bot 123456:ABC 111222333"
+        exit 2
+    fi
+    _deploy_bot "$token" "$admins"
+    # статистика могла быть не поднята, если слой ставили с --no-bot — гарантируем
+    setup_stats
+}
+
+remove_bot_only() {
+    if [ ! -f /etc/systemd/system/awg-bot.service ]; then
+        log "Бот не установлен — нечего удалять."
+        exit 0
+    fi
+    log "Удаляю Telegram-бот (слой AmneziaWG и клиенты остаются)…"
+    systemctl disable --now awg-bot 2>/dev/null || true
+    rm -f /etc/systemd/system/awg-bot.service
+    systemctl daemon-reload 2>/dev/null || true
+    rm -f "$DEST/bot/awg_bot.py"
+    [ -f "$STATE" ] && sed -i "s#^AWG_BOT_INSTALL=.*#AWG_BOT_INSTALL='0'#" "$STATE" 2>/dev/null || true
+    log "✅ Бот удалён. Вернуть: bash install.sh --install-bot"
 }
 
 awg_layer() {
@@ -328,6 +400,14 @@ main() {
         systemctl disable --now awg-resume.service 2>/dev/null || true
         rm -f /etc/systemd/system/awg-resume.service
         systemctl daemon-reload 2>/dev/null || true
+    fi
+    if [ "$REMOVE_BOT" = 1 ]; then
+        remove_bot_only
+        exit 0
+    fi
+    if [ "$INSTALL_BOT" = 1 ]; then
+        install_bot_only
+        exit 0
     fi
     if [ "$MIGRATE" = 1 ]; then
         migrate_layer
