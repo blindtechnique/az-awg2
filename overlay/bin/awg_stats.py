@@ -35,10 +35,22 @@ DB_PATH = os.environ.get("AWG_STATS_DB", "/opt/antizapret-awg/stats.db")
 AWG_DIR = os.environ.get("AWG_DIR", "/etc/amnezia/amneziawg")
 
 
+def _have(binary: str) -> bool:
+    from shutil import which
+    return which(binary) is not None
+
+
 def _ifaces():
-    """Имена awg-интерфейсов из services.env (зависят от режима replace/keep)."""
+    """Список опрашиваемых интерфейсов: (iface, binary, origin).
+
+    * наш слой AmneziaWG 2.0 — интерфейсы из services.env, бинарник awg;
+    * ванильный WireGuard AntiZapret — antizapret/vpn, бинарник wg.
+      В parallel-режиме имена НЕ пересекаются (наши antizapret-awg/vpn-awg),
+      так что оба слоя видны одновременно. wg может отсутствовать (на серверах,
+      где ваниль ставит только amneziawg-tools) — тогда просто пропускаем.
+    """
     env = os.path.join(AWG_DIR, "services.env")
-    az, vpn = "antizapret", "vpn"
+    az, vpn, mode = "antizapret", "vpn", "replace"
     try:
         for line in open(env, encoding="utf-8"):
             line = line.strip()
@@ -46,9 +58,18 @@ def _ifaces():
                 az = line.split("=", 1)[1].strip()
             elif line.startswith("VPN_IFACE="):
                 vpn = line.split("=", 1)[1].strip()
+            elif line.startswith("MODE="):
+                mode = line.split("=", 1)[1].strip()
     except OSError:
         pass
-    return (az, vpn)
+
+    result = [(az, "awg", "awg2"), (vpn, "awg", "awg2")]
+    # ванильные WG-интерфейсы добавляем только когда они НЕ совпадают с нашими
+    # (в parallel/keep — не совпадают; в legacy replace наши имена = ванильные,
+    #  отдельного ванильного слоя там нет). Опрашиваем через wg, если он есть.
+    if mode in ("parallel", "keep") and _have("wg"):
+        result += [("antizapret", "wg", "vanilla"), ("vpn", "wg", "vanilla")]
+    return result
 
 
 IFACES = _ifaces()
@@ -58,6 +79,7 @@ SAMPLE_RETENTION_DAYS = 14
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
     pubkey TEXT PRIMARY KEY, name TEXT, iface TEXT,
+    origin TEXT DEFAULT 'awg2',
     first_seen INTEGER, last_seen INTEGER
 );
 CREATE TABLE IF NOT EXISTS totals (
@@ -94,35 +116,55 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with db() as c:
         c.executescript(SCHEMA)
+        # миграция БД прошлых версий: добавить peers.origin, если её нет
+        cols = [r[1] for r in c.execute("PRAGMA table_info(peers)").fetchall()]
+        if "origin" not in cols:
+            c.execute("ALTER TABLE peers ADD COLUMN origin TEXT DEFAULT 'awg2'")
 
 
 # ── маппинг pubkey → имя клиента ─────────────────────────────────────────────
 
+WG_DIR = os.environ.get("WG_DIR", "/etc/wireguard")
+
+
+def _conf_path(iface: str, origin: str) -> str:
+    """Наши awg-конфиги лежат в AWG_DIR, ванильные wg — в /etc/wireguard."""
+    base = AWG_DIR if origin == "awg2" else WG_DIR
+    return os.path.join(base, f"{iface}.conf")
+
+
 def load_names() -> dict:
-    """Прочитать серверные конфиги: '# name' над каждым [Peer] → {pubkey: (name, iface)}."""
+    """Серверные конфиги: '# name' (наши) или '# Client = name' (ваниль) над каждым
+    [Peer] → {pubkey: (name, iface, origin)}. Ключи уникальны, коллизий нет."""
     mapping = {}
-    for iface in IFACES:
-        path = os.path.join(AWG_DIR, f"{iface}.conf")
+    for iface, _bin, origin in IFACES:
+        path = _conf_path(iface, origin)
         if not os.path.exists(path):
             continue
+        # Имя клиента может стоять ДО [Peer] (ваниль: '# Client = name', затем
+        # '# PrivateKey = ...', затем [Peer]) или ПОСЛЕ (наш слой: [Peer], '# name').
+        # Поэтому не сбрасываем name на [Peer]; сбрасываем ПОСЛЕ каждого PublicKey.
         name = None
         for line in open(path, encoding="utf-8", errors="ignore"):
             s = line.strip()
-            if s.startswith("[Peer]"):
-                name = None
-            elif s.startswith("#") and len(s) > 1:
-                name = s[1:].strip()
+            if s.startswith("#") and len(s) > 1:
+                c = s[1:].strip()
+                low = c.lower()
+                if low.startswith("privatekey") or low.startswith("presharedkey"):
+                    continue                       # служебные комментарии ванили — не имя
+                name = c.split("=", 1)[1].strip() if low.startswith("client =") else c
             elif s.startswith("PublicKey"):
                 pk = s.split("=", 1)[1].strip()
-                mapping[pk] = (name or pk[:8], iface)
+                mapping[pk] = (name or pk[:8], iface, origin)
+                name = None                        # готово к следующему peer
     return mapping
 
 
 # ── парсинг awg dump ─────────────────────────────────────────────────────────
 
-def dump_iface(iface: str) -> str:
+def dump_iface(iface: str, binary: str = "awg") -> str:
     try:
-        return subprocess.run(["awg", "show", iface, "dump"],
+        return subprocess.run([binary, "show", iface, "dump"],
                               capture_output=True, text=True, timeout=15).stdout
     except Exception:  # noqa: BLE001
         return ""
@@ -153,15 +195,16 @@ def poll(dump_override: dict = None):
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     new_ips = set()
     with db() as c:
-        for iface in IFACES:
-            text = dump_override[iface] if dump_override and iface in dump_override else dump_iface(iface)
+        for iface, binary, origin in IFACES:
+            text = (dump_override[iface] if dump_override and iface in dump_override
+                    else dump_iface(iface, binary))
             for p in parse_dump(text):
                 pk = p["pubkey"]
-                name, ifc = names.get(pk, (pk[:8], iface))
-                c.execute("""INSERT INTO peers(pubkey,name,iface,first_seen,last_seen)
-                             VALUES(?,?,?,?,?)
-                             ON CONFLICT(pubkey) DO UPDATE SET name=?,iface=?,last_seen=?""",
-                          (pk, name, ifc, now, now, name, ifc, now))
+                name, ifc, org = names.get(pk, (pk[:8], iface, origin))
+                c.execute("""INSERT INTO peers(pubkey,name,iface,origin,first_seen,last_seen)
+                             VALUES(?,?,?,?,?,?)
+                             ON CONFLICT(pubkey) DO UPDATE SET name=?,iface=?,origin=?,last_seen=?""",
+                          (pk, name, ifc, org, now, now, name, ifc, org, now))
                 row = c.execute("SELECT last_rx,last_tx FROM totals WHERE pubkey=?",
                                 (pk,)).fetchone()
                 if row is None:
@@ -274,22 +317,22 @@ def overview() -> str:
     now = int(time.time())
     with db() as c:
         rows = c.execute("""
-            SELECT p.name, p.iface, t.rx_life, t.tx_life, t.last_handshake
+            SELECT p.name, p.iface, p.origin, t.rx_life, t.tx_life, t.last_handshake, p.pubkey
             FROM peers p LEFT JOIN totals t ON p.pubkey=t.pubkey
             ORDER BY (t.rx_life+t.tx_life) DESC""").fetchall()
         if not rows:
             return "Пока нет данных (клиенты не подключались)."
         out = ["👥 Клиенты (по объёму трафика):", ""]
         online = 0
-        for name, iface, rxl, txl, hs in rows:
+        for name, iface, origin, rxl, txl, hs, pk in rows:
             is_on = hs and (now - hs) < ONLINE_WINDOW
             online += 1 if is_on else 0
             dot = "🟢" if is_on else "⚪️"
-            pk = c.execute("SELECT pubkey FROM peers WHERE name=? LIMIT 1", (name,)).fetchone()[0]
+            tag = "🅰️" if origin == "vanilla" else "🅾️"   # ваниль / AWG 2.0 overlay
             drow = c.execute("SELECT rx,tx FROM daily WHERE pubkey=? AND day=?",
                              (pk, today)).fetchone()
             td = human((drow[0] if drow else 0) + (drow[1] if drow else 0))
-            out.append(f"{dot} {name} [{iface}]  ↓{human(rxl)} ↑{human(txl)} "
+            out.append(f"{dot}{tag} {name} [{iface}]  ↓{human(rxl)} ↑{human(txl)} "
                        f"· сегодня {td} · {ago(hs)}")
         tot = c.execute("SELECT SUM(rx_life),SUM(tx_life) FROM totals").fetchone()
         out += ["", f"Онлайн: {online}/{len(rows)} · всего "
@@ -307,20 +350,33 @@ def dt(ts: int) -> str:
         return "—"
 
 
-def client(name: str) -> str:
+def client(name: str, origin: str = None) -> str:
     init_db()
     now = int(time.time())
     with db() as c:
-        prow = c.execute("SELECT pubkey,iface FROM peers WHERE name=? LIMIT 1",
-                         (name,)).fetchone()
+        if origin:
+            prow = c.execute("SELECT pubkey,iface,origin FROM peers WHERE name=? AND origin=? LIMIT 1",
+                             (name, origin)).fetchone()
+        else:
+            prow = c.execute("SELECT pubkey,iface,origin FROM peers WHERE name=? LIMIT 1",
+                             (name,)).fetchone()
         if not prow:
+            # клиент может существовать в серверном конфиге, но ещё ни разу
+            # не подключался — тогда его нет в БД статистики
+            for pk2, (nm, ifc, org2) in load_names().items():
+                if nm == name and (origin is None or org2 == origin):
+                    layer2 = "стоковый WG" if org2 == "vanilla" else "AmneziaWG 2.0"
+                    return (f"📊 <b>{name}</b> [{ifc} · {layer2}] ⚪️\n"
+                            "Клиент создан, но ещё ни разу не подключался —\n"
+                            "статистика появится после первого handshake.")
             return f"Клиент '{name}' не найден."
-        pk, iface = prow
+        pk, iface, org = prow
         t = c.execute("""SELECT rx_life,tx_life,last_handshake,endpoint
                          FROM totals WHERE pubkey=?""", (pk,)).fetchone() or (0, 0, 0, "")
         is_on = t[2] and (now - t[2]) < ONLINE_WINDOW
         cur_ip = (t[3] or "").rsplit(":", 1)[0].strip("[]")
-        out = [f"📊 <b>{name}</b> [{iface}] {'🟢 онлайн' if is_on else '⚪️ офлайн'}",
+        layer = "стоковый WG" if org == "vanilla" else "AmneziaWG 2.0"
+        out = [f"📊 <b>{name}</b> [{iface} · {layer}] {'🟢 онлайн' if is_on else '⚪️ офлайн'}",
                f"Последняя активность: {dt(t[2])} ({ago(t[2])})",
                f"Всего трафика: ↓{human(t[0])} ↑{human(t[1])} (Σ {human(t[0]+t[1])})"]
         conn = c.execute("""SELECT ts,ip,rx_start,tx_start FROM connections
@@ -427,7 +483,11 @@ def main():
     elif cmd == "server":
         print(server_info())
     elif cmd == "client":
-        print(client(sys.argv[2]) if len(sys.argv) > 2 else "Укажи имя клиента")
+        if len(sys.argv) > 2:
+            org = sys.argv[3] if len(sys.argv) > 3 else None
+            print(client(sys.argv[2], org))
+        else:
+            print("Укажи имя клиента")
     elif cmd == "prune":
         prune(int(sys.argv[2]) if len(sys.argv) > 2 else SAMPLE_RETENTION_DAYS)
     else:
