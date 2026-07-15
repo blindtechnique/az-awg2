@@ -139,7 +139,7 @@ deploy_overlay() {
     cp "$OVERLAY/obfuscation/awg_obfuscate.py" "$OVERLAY/bin/awg-obfuscation.sh" \
        "$OVERLAY/bin/awg-export.py" "$OVERLAY/bin/client-awg.sh" \
        "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg-reintegrate.sh" \
-       "$OVERLAY/bin/awg-knot-view.sh" \
+       "$OVERLAY/bin/awg-knot-view.sh" "$OVERLAY/bin/az_setup_runner.py" \
        "$OVERLAY/bin/awg_stats.py" "$DEST/" 2>/dev/null || true
     chmod +x "$DEST"/*.sh "$DEST"/*.py 2>/dev/null || true
     ln -sf "$DEST/awg-obfuscation.sh" /usr/local/bin/awg-obfuscation
