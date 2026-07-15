@@ -44,6 +44,11 @@ if not TOKEN or not ADMINS:
     print("AWG_BOT_TOKEN и AWG_BOT_ADMINS обязательны (systemd Environment=)", file=sys.stderr)
     sys.exit(1)
 
+# ванильный AntiZapret кладёт junk-only «-am» конфиги сюда (client.sh опция 4)
+VANILLA_AM_DIR = os.environ.get("AWG_VANILLA_AM_DIR", "/root/antizapret/client/amneziawg")
+# client.sh не рассчитан на параллельные вызовы (бот + админ-панель) — сериализуем
+CLIENT_SH_LOCK = os.environ.get("AWG_CLIENT_SH_LOCK", "/run/antizapret-client.lock")
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 PY = VENV_PY if os.path.exists(VENV_PY) else "python3"
 bot = Bot(TOKEN)
@@ -68,6 +73,27 @@ def run(cmd: list, timeout: int = 180) -> tuple:
         return 1, "", "timeout"
     except Exception as e:  # noqa: BLE001
         return 1, "", str(e)
+
+
+def run_client_sh(args: list, timeout: int = 300) -> tuple:
+    """Вызвать ванильный client.sh под flock — client.sh переписывает
+    /etc/wireguard/*.conf и chmod 600 на каждом вызове, поэтому параллельный
+    запуск (бот + админ-панель) может побить файлы. flock -w ждёт до 30с."""
+    if os.path.exists("/usr/bin/flock") or os.path.exists("/bin/flock"):
+        return run(["flock", "-w", "30", CLIENT_SH_LOCK, UPSTREAM_SH, *args], timeout)
+    return run([UPSTREAM_SH, *args], timeout)
+
+
+def vanilla_wg_names() -> list:
+    """Ванильные WG/AmneziaWG клиенты — источник истины client.sh 6."""
+    rc, out, _ = run_client_sh(["6"], timeout=60)
+    names = []
+    for s in out.splitlines():
+        s = s.strip()
+        # client.sh 6 печатает имена клиентов; фильтруем служебные строки
+        if NAME_RE.match(s) and s not in ("antizapret", "vpn"):
+            names.append(s)
+    return names
 
 
 def stats(*a) -> str:
@@ -131,7 +157,8 @@ def main_menu() -> InlineKeyboardMarkup:
 
 def clients_menu() -> InlineKeyboardMarkup:
     return kb([
-        [("➕ AmneziaWG", "awg:menu"), ("➕ OpenVPN", "ovpn:menu")],
+        [("➕ AmneziaWG 2.0", "awg:menu")],
+        [("➕ Ванильный WG", "vanilla:add"), ("➕ OpenVPN", "ovpn:menu")],
         [("⏳ Временный клиент", "temp:menu")],
         [("📋 Список клиентов", "clients:list")],
         back(),
@@ -155,7 +182,7 @@ def awg_names(svc: str) -> list:
 
 
 def ovpn_names() -> list:
-    rc, out, _ = run([UPSTREAM_SH, "3"], timeout=60)
+    rc, out, _ = run_client_sh(["3"], timeout=60)
     return [s.strip() for s in out.splitlines()
             if NAME_RE.match(s.strip()) and s.strip() != "antizapret-server"]
 
@@ -177,6 +204,20 @@ async def send_awg_files(chat: int, svc: str, name: str):
                                parse_mode="HTML")
         for chunk in (uri[i:i + 3800] for i in range(0, len(uri), 3800)):
             await bot.send_message(chat, f"<code>{html.escape(chunk)}</code>", parse_mode="HTML")
+
+
+async def send_vanilla_wg_files(chat: int, name: str):
+    """Ванильный WG-клиент: отдаём только обфусцированные junk-only «-am» конфиги
+    для обоих туннелей (antizapret split + vpn full). Plain-WG файлы не шлём."""
+    sent = 0
+    for svc, label in (("antizapret", "AntiZapret (split)"), ("vpn", "Полный VPN")):
+        conf = os.path.join(VANILLA_AM_DIR, svc, f"{svc}-{name}-am.conf")
+        if os.path.exists(conf):
+            await bot.send_document(chat, FSInputFile(conf, filename=f"{svc}-{name}-am.conf"),
+                                    caption=f"📄 {label} — AmneziaWG (ваниль)")
+            sent += 1
+    if not sent:
+        await bot.send_message(chat, "⚠️ «-am» конфиги ванильного клиента не найдены.")
 
 
 async def send_ovpn_files(chat: int, name: str):
@@ -239,10 +280,19 @@ async def on_name(m: Message, state: FSMContext):
         await send_awg_files(m.chat.id, svc, name)
         await upd(f"✅ <b>{html.escape(name)}</b> ({svc}) готов"
                   + (f" · удалится через {ttl}" if ttl else ""), main_menu())
+    elif kind == "vanilla":
+        await upd(f"⏳ Создаю ванильного WG <b>{html.escape(name)}</b> (оба туннеля)…")
+        # client.sh 4 создаёт клиента сразу в antizapret+vpn (split и full)
+        rc, out, err = run_client_sh(["4", name])
+        if rc != 0:
+            return await upd(f"❌ {html.escape(err or out)[:900]}", main_menu())
+        await send_vanilla_wg_files(m.chat.id, name)
+        await upd(f"✅ Ванильный WG <b>{html.escape(name)}</b> готов "
+                  "(AntiZapret + Полный VPN)", main_menu())
     elif kind in ("ovpn", "temp_ovpn"):
         days = data["days"]
         await upd(f"⏳ Создаю OpenVPN <b>{html.escape(name)}</b> ({days}д)…")
-        rc, out, err = run([UPSTREAM_SH, "1", name, days], timeout=300)
+        rc, out, err = run_client_sh(["1", name, days])
         if rc != 0:
             return await upd(f"❌ {html.escape(err or out)[:900]}", main_menu())
         await send_ovpn_files(m.chat.id, name)
@@ -280,19 +330,22 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d == "clients:list":
         az = [("antizapret", n) for n in awg_names("antizapret")]
         vp = [("vpn", n) for n in awg_names("vpn")]
+        van = [("vanilla", n) for n in vanilla_wg_names()]
         ov = [("ovpn", n) for n in ovpn_names()]
         rows = []
-        for svc, n in (az + vp + ov)[:80]:
-            tag = {"antizapret": "🌐", "vpn": "🔒", "ovpn": "📄"}[svc]
+        for svc, n in (az + vp + van + ov)[:80]:
+            tag = {"antizapret": "🌐", "vpn": "🔒", "vanilla": "🅰️", "ovpn": "📄"}[svc]
             rows.append([(f"{tag} {n}", f"cli:{svc}:{n}")])
         if not rows:
             rows = [[("(клиентов нет)", "clients:menu")]]
         rows.append(back("clients:menu"))
-        return await show(c, "Выбери клиента:", kb(rows))
+        return await show(c, "Выбери клиента:\n🌐/🔒 AWG 2.0 · 🅰️ ваниль WG · 📄 OpenVPN",
+                          kb(rows))
 
     if d.startswith("cli:"):
         _, svc, name = d.split(":", 2)
-        tag = {"antizapret": "AmneziaWG · AntiZapret", "vpn": "AmneziaWG · Полный VPN",
+        tag = {"antizapret": "AmneziaWG 2.0 · AntiZapret", "vpn": "AmneziaWG 2.0 · Полный VPN",
+               "vanilla": "Ванильный WG · AntiZapret + Полный VPN",
                "ovpn": "OpenVPN"}.get(svc, svc)
         return await show(c, f"👤 <b>{html.escape(name)}</b>\n{tag}", client_menu(svc, name))
 
@@ -300,9 +353,11 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         _, svc, name = d.split(":", 2)
         if svc == "ovpn":
             return await show(c, f"📄 OpenVPN-клиент <b>{html.escape(name)}</b>\n"
-                              "(детальная статистика — для AmneziaWG)",
+                              "(детальная статистика — для WireGuard/AmneziaWG)",
                               kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
-        return await show(c, stats("client", name),
+        # ванильный клиент фильтруется по origin=vanilla (имя может совпасть с awg2)
+        args = ["client", name, "vanilla"] if svc == "vanilla" else ["client", name]
+        return await show(c, stats(*args),
                           kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
                               [("⬅️ Назад", f"cli:{svc}:{name}")]]), stamp=True)
 
@@ -312,6 +367,8 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
                    kb([[("⬅️ Назад", f"cli:{svc}:{name}")]]))
         if svc == "ovpn":
             await send_ovpn_files(c.message.chat.id, name)
+        elif svc == "vanilla":
+            await send_vanilla_wg_files(c.message.chat.id, name)
         else:
             conf = os.path.join(CLIENT_DIR, svc, f"{svc}-{name}-am.conf")
             if os.path.exists(conf):
@@ -323,7 +380,9 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d.startswith("cldel:"):
         _, svc, name = d.split(":", 2)
         if svc == "ovpn":
-            rc, out, err = run([UPSTREAM_SH, "2", name], timeout=120)
+            rc, out, err = run_client_sh(["2", name], timeout=120)
+        elif svc == "vanilla":
+            rc, out, err = run_client_sh(["5", name], timeout=120)  # WG delete
         else:
             rc, out, err = run([CLIENT_SH, "del", name, svc])
         txt = (f"🗑 Удалён: {html.escape(name)}" if rc == 0
@@ -336,6 +395,9 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
             [("🔒 Полный VPN", "awgsvc:vpn")], back("clients:menu")]))
     if d.startswith("awgsvc:"):
         return await ask_name(c, state, kind="awg", svc=d.split(":", 1)[1])
+
+    if d == "vanilla:add":
+        return await ask_name(c, state, kind="vanilla")
 
     if d == "ovpn:menu":
         return await show(c, "OpenVPN — срок сертификата:", kb([

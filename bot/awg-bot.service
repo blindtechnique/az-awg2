@@ -1,6 +1,6 @@
 [Unit]
 Description=AntiZapret-AWG Telegram bot
-After=network-online.target awg-quick@antizapret.service
+After=network-online.target antizapret.service
 Wants=network-online.target
 
 [Service]
@@ -14,6 +14,8 @@ Environment=AWG_BACKUP_SH=/usr/local/bin/awg-backup
 Environment=AWG_UPSTREAM_CLIENT_SH=/root/antizapret/client.sh
 Environment=AWG_CLIENT_DIR=/opt/antizapret-awg/clients
 Environment=AWG_OVPN_DIR=/root/antizapret/client/openvpn
+Environment=AWG_VANILLA_AM_DIR=/root/antizapret/client/amneziawg
+Environment=AWG_CLIENT_SH_LOCK=/run/antizapret-client.lock
 Environment=AWG_STATS_PY=/opt/antizapret-awg/awg_stats.py
 Environment=AWG_EXPORT_PY=/opt/antizapret-awg/awg-export.py
 Environment=AWG_VENV_PY=/opt/antizapret-awg/venv/bin/python
