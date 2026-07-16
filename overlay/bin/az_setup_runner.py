@@ -336,17 +336,47 @@ def do_run(mode: str, answers_file: str, status: str, logpath: str) -> int:
     log_line(logf, "awg-reintegrate — возврат слоя AmneziaWG 2.0…")
     sh([REINTEGRATE], timeout=300)
 
+    # 5a) КРИТИЧНО для альтернативных диапазонов (172.x / 198.18.x): split-routing
+    # в клиентских конфигах опирается на /etc/wireguard/ips (там FAKE_IP-диапазон),
+    # который setup.sh перегенерировал под текущие ответы. Старые клиентские .conf
+    # содержат прежние AllowedIPs → после смены диапазона split ломается. Поэтому
+    # пересобираем клиентов слоя из свежего ips-файла.
+    reg = sh(["/opt/antizapret-awg/client-awg.sh", "regen-all"], timeout=300)
+    log_line(logf, f"regen-all клиентов слоя: rc={reg.returncode}")
+
+    # 5b) верификация split-routing: up.sh должен был поставить ANTIZAPRET-MAPPING
+    # и CONNMARK для клиентской подсети. Если их нет — предупреждаем в отчёте
+    # (не рушим: сервер уедет в reboot, где up.sh отработает начисто).
+    split_ok = True
+    try:
+        rules = sh(["iptables", "-w", "-t", "nat", "-S"], timeout=30).stdout
+        if "ANTIZAPRET-MAPPING" not in rules:
+            split_ok = False
+    except Exception:  # noqa: BLE001
+        pass
+    if not split_ok:
+        log_line(logf, "⚠️ ANTIZAPRET-MAPPING не найден до reboot — проверится после")
+
     # 6) отложенная перезагрузка: минута на отчёт бота
     write_status(status, phase="done", answered=answered, reboot_pending=True,
-                 reported=False)
+                 reported=False, split_ok=split_ok,
+                 alt_ip=(build_answers(mode, answers_file).get("ALTERNATIVE_CLIENT_IP") == "y"))
     log_line(logf, "✅ обновление завершено, перезагрузка через 1 минуту (shutdown -r +1)")
     sh(["shutdown", "-r", "+1", "AntiZapret full update — reboot"], timeout=30)
     return 0
 
 
+def dump_current() -> dict:
+    """Текущие ответы анкеты из /root/antizapret/setup — для показа/редактирования
+    в боте перед полным обновлением. Возвращает {VAR: value} по известным вопросам."""
+    cur = load_env_file(VANILLA_SETUP_FILE)
+    known_vars = {var for _, var in PROMPT_MAP}
+    return {k: v for k, v in cur.items() if k in known_vars}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["preflight", "run"])
+    ap.add_argument("action", choices=["preflight", "run", "dump-current"])
     ap.add_argument("--mode", choices=["current", "defaults"], default="current")
     ap.add_argument("--answers", default="/opt/antizapret-awg/setup-answers.env")
     ap.add_argument("--status", default=DEFAULT_STATUS)
@@ -354,6 +384,9 @@ def main():
     a = ap.parse_args()
     if a.action == "preflight":
         print(json.dumps(preflight(), ensure_ascii=False))
+        return 0
+    if a.action == "dump-current":
+        print(json.dumps(dump_current(), ensure_ascii=False))
         return 0
     return do_run(a.mode, a.answers, a.status, a.log)
 
