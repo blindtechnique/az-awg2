@@ -169,10 +169,6 @@ awg-backup restore файл.tar.gz
 
 Доступ — только по whitelist `AWG_BOT_ADMINS`. Бот ставится в Шаге 2 либо доустанавливается позже через `--install-bot`.
 
-<!-- Скриншоты: добавь свои в docs/img/ и вставь сюда, например:
-![Меню бота](docs/img/bot-menu.png)
-![Инфо о сервере](docs/img/bot-server.png)
--->
 
 ## Настройки обфускации
 
