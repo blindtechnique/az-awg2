@@ -322,6 +322,10 @@ EDITABLE_PARAMS = [
      [("n", "выкл"), ("y", "вкл")]),
     ("ROUTE_ALL", "Маршрутизировать все домены",
      [("n", "выкл"), ("y", "вкл")]),
+    ("OPENVPN_DUPLICATE", "OpenVPN: один конфиг на неск. устройств",
+     [("n", "запретить"), ("y", "разрешить")]),
+    ("CLIENT_ISOLATION", "Изоляция клиентов друг от друга",
+     [("n", "выкл"), ("y", "вкл")]),
 ]
 # сессионные оверрайды параметров, ключ = admin chat_id
 _param_overrides = {}
@@ -390,6 +394,7 @@ def main_menu() -> InlineKeyboardMarkup:
 
 def upd_menu() -> InlineKeyboardMarkup:
     return kb([
+        [("🔎 Проверить обновления", "upd:check")],
         [("📋 Обновить списки АнтиЗапрета", "upd:doall")],
         [("⬆️ Полное обновление AntiZapret", "upd:full")],
         [("🧬 Обновить AWG 2.0 (код слоя)", "upd:awg")],
@@ -398,14 +403,43 @@ def upd_menu() -> InlineKeyboardMarkup:
     ])
 
 
+def has_openvpn() -> bool:
+    """OpenVPN установлен, если есть серверные конфиги AntiZapret."""
+    import glob as _g
+    return bool(_g.glob("/etc/openvpn/server/antizapret-*.conf")
+                or _g.glob("/etc/openvpn/server/vpn-*.conf"))
+
+
+def has_wireguard() -> bool:
+    """Стоковый WireGuard установлен, если есть его серверные конфиги."""
+    return os.path.exists("/etc/wireguard/antizapret.conf") \
+        or os.path.exists("/etc/wireguard/vpn.conf")
+
+
+def has_awg_layer() -> bool:
+    """Наш слой AmneziaWG 2.0 установлен."""
+    return os.path.exists(SERVICES_ENV)
+
+
 def clients_menu() -> InlineKeyboardMarkup:
-    return kb([
-        [("➕ AmneziaWG 2.0", "awg:menu")],
-        [("➕ Стоковый WG", "vanilla:add"), ("➕ OpenVPN", "ovpn:menu")],
-        [("⏳ Временный клиент", "temp:menu")],
-        [("📋 Список клиентов", "clients:list")],
-        back(),
-    ])
+    # показываем только те типы клиентов, что реально доступны на сервере
+    # (пользователь мог поставить AntiZapret без OpenVPN и/или без WireGuard)
+    rows = []
+    if has_awg_layer():
+        rows.append([("➕ AmneziaWG 2.0", "awg:menu")])
+    row2 = []
+    if has_wireguard():
+        row2.append(("➕ Стоковый WG", "vanilla:add"))
+    if has_openvpn():
+        row2.append(("➕ OpenVPN", "ovpn:menu"))
+    if row2:
+        rows.append(row2)
+    # временные клиенты — только для слоя (наш механизм TTL) или OpenVPN
+    if has_awg_layer() or has_openvpn():
+        rows.append([("⏳ Временный клиент", "temp:menu")])
+    rows.append([("📋 Список клиентов", "clients:list")])
+    rows.append(back())
+    return kb(rows)
 
 
 def client_menu(svc: str, name: str) -> InlineKeyboardMarkup:
@@ -521,7 +555,8 @@ async def on_name(m: Message, state: FSMContext):
             return await upd(f"❌ {html.escape(err or out)}", main_menu())
         await send_awg_files(m.chat.id, svc, name)
         await upd(f"✅ <b>{html.escape(name)}</b> ({svc}) готов"
-                  + (f" · удалится через {ttl}" if ttl else ""), main_menu())
+                  + (f" · удалится через {ttl}" if ttl else ""))
+        await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
     elif kind == "vanilla":
         await upd(f"⏳ Создаю стокового WG <b>{html.escape(name)}</b> (оба туннеля)…")
         # client.sh 4 создаёт клиента сразу в antizapret+vpn (split и full)
@@ -530,7 +565,8 @@ async def on_name(m: Message, state: FSMContext):
             return await upd(f"❌ {html.escape(err or out)[:900]}", main_menu())
         await send_vanilla_wg_files(m.chat.id, name)
         await upd(f"✅ Стоковый WG <b>{html.escape(name)}</b> готов "
-                  "(AntiZapret + Полный VPN)", main_menu())
+                  "(AntiZapret + Полный VPN)")
+        await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
     elif kind in ("ovpn", "temp_ovpn"):
         days = data["days"]
         await upd(f"⏳ Создаю OpenVPN <b>{html.escape(name)}</b> ({days}д)…")
@@ -538,7 +574,8 @@ async def on_name(m: Message, state: FSMContext):
         if rc != 0:
             return await upd(f"❌ {html.escape(err or out)[:900]}", main_menu())
         await send_ovpn_files(m.chat.id, name)
-        await upd(f"✅ OpenVPN <b>{html.escape(name)}</b> готов", main_menu())
+        await upd(f"✅ OpenVPN <b>{html.escape(name)}</b> готов")
+        await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
 
 
 async def ask_name(c: CallbackQuery, state: FSMContext, **data):
@@ -596,7 +633,13 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d.startswith("clinfo:"):
         _, svc, name = d.split(":", 2)
         if svc == "ovpn":
-            return await show(c, ovpn_status(name),
+            # живые сессии (гео/IP/трафик сейчас) + накопленная история из БД
+            live = ovpn_status(name)
+            hist = stats("client", name, "openvpn")
+            body = live
+            if hist and "не найден" not in hist:
+                body = live + "\n\n— — —\n" + hist
+            return await show(c, body,
                               kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
                                   [("⬅️ Назад", f"cli:{svc}:{name}")]]), stamp=True)
         # ванильный клиент фильтруется по origin=vanilla (имя может совпасть с awg2)
@@ -619,6 +662,9 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
                 run([PY, EXPORT_PY, conf, "--name", f"{svc}-{name}",
                      "--outdir", os.path.dirname(conf), "--all"])
             await send_awg_files(c.message.chat.id, svc, name)
+        # после файлов — заново открыть меню отдельным сообщением
+        await bot.send_message(c.message.chat.id, menu_header(),
+                               parse_mode="HTML", reply_markup=main_menu())
         return
 
     if d.startswith("cldel:"):
@@ -651,10 +697,14 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         return await ask_name(c, state, kind="ovpn", days=d.split(":", 1)[1])
 
     if d == "temp:menu":
-        return await show(c, "Временный клиент — тип:", kb([
-            [("🌐 AWG AntiZapret", "temptype:antizapret")],
-            [("🔒 AWG Полный VPN", "temptype:vpn")],
-            [("📄 OpenVPN", "temptype:ovpn")], back("clients:menu")]))
+        rows = []
+        if has_awg_layer():
+            rows.append([("🌐 AWG AntiZapret", "temptype:antizapret")])
+            rows.append([("🔒 AWG Полный VPN", "temptype:vpn")])
+        if has_openvpn():
+            rows.append([("📄 OpenVPN", "temptype:ovpn")])
+        rows.append(back("clients:menu"))
+        return await show(c, "Временный клиент — тип:", kb(rows))
     if d.startswith("temptype:"):
         t = d.split(":", 1)[1]
         if t == "ovpn":
@@ -675,6 +725,30 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
 
     if d == "upd:menu":
         return await show(c, "🔄 <b>Обновление</b>", upd_menu())
+
+    if d == "upd:check":
+        await show(c, "🔎 Проверяю изменения кода на GitHub…", kb([back("upd:menu")]))
+        rc, out, err = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: run([PY, RUNNER_PY, "check-updates"], timeout=90))
+        try:
+            ch = json.loads(out)
+        except Exception:  # noqa: BLE001
+            return await show(c, f"❌ Не удалось проверить: {html.escape((err or out)[:300])}",
+                              kb([back("upd:menu")]))
+        az, lay = ch.get("antizapret", {}), ch.get("layer", {})
+
+        def _line(name, info, action):
+            if not info.get("known"):
+                return f"• {name}: не с чем сравнить (обновись через бота — запомню версию)"
+            if info.get("changed"):
+                return f"• {name}: 🟢 есть изменения кода → {action}"
+            return f"• {name}: ✅ актуально, обновлять не обязательно"
+
+        txt = ("🔎 <b>Проверка обновлений (код, не списки)</b>\n\n"
+               + _line("AntiZapret", az, "«Полное обновление»") + "\n"
+               + _line("Слой AWG 2.0", lay, "«Обновить AWG 2.0»") + "\n\n"
+               "Списки блокировок обновляются отдельно кнопкой «Обновить списки».")
+        return await show(c, txt, kb([back("upd:menu")]))
 
     # ── списки АнтиЗапрета (doall.sh) — быстро и безопасно
     if d == "upd:doall":
@@ -938,10 +1012,6 @@ async def report_pending():
     if st.get("phase") == "done" and st.get("reboot_pending") and not st.get("reported"):
         extra = " ⚠️ Были незнакомые вопросы — принят дефолт апстрима." \
             if st.get("had_unknown") else ""
-        if st.get("alt_ip"):
-            extra += ("\n⚠️ Использованы альтернативные диапазоны IP — если у "
-                      "split-клиентов не открываются заблокированные сайты, "
-                      "раздай им заново конфиги (кнопка 📥 Скачать у каждого).")
         jobs.append(("✅ <b>Полное обновление AntiZapret завершено</b>, сервер "
                      "перезагружен, слой AmneziaWG 2.0 восстановлен." + extra,
                      dict(reported=True, reboot_pending=False)))

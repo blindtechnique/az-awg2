@@ -6,4 +6,6 @@ After=awg-quick@antizapret.service
 Type=oneshot
 Environment=AWG_STATS_DB=/opt/antizapret-awg/stats.db
 Environment=AWG_DIR=/etc/amnezia/amneziawg
+Environment=AWG_OVPN_STATUS_DIR=/etc/openvpn/server/logs
+Environment=WG_DIR=/etc/wireguard
 ExecStart=/opt/antizapret-awg/venv/bin/python /opt/antizapret-awg/awg_stats.py poll
