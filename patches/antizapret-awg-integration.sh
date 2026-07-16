@@ -107,8 +107,15 @@ install_awg() {
         # keyserver.ubuntu.com. Метод по гайду mk16.de (проверен на Debian 12/13).
         log "Установка amneziawg (Debian: ручной репозиторий Amnezia + DKMS)…"
         install -d -m 0755 /usr/share/keyrings
+        # ВАЖНО: на Debian 13 верификатор sqv работает от пользователя _apt и
+        # не может прочитать keyring, созданный с прежним umask (600) → ошибка
+        # "Permission denied (os error 13)". Пишем во временный файл и ставим 0644.
+        umask 022
         curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x75C9DD72C799870E310542E24166F2C257290828" \
-            | gpg --dearmor -o /usr/share/keyrings/amnezia.gpg
+            | gpg --dearmor > /usr/share/keyrings/amnezia.gpg.tmp
+        install -m 0644 /usr/share/keyrings/amnezia.gpg.tmp /usr/share/keyrings/amnezia.gpg
+        rm -f /usr/share/keyrings/amnezia.gpg.tmp
+        chmod 0644 /usr/share/keyrings/amnezia.gpg
         cat > /etc/apt/sources.list.d/amnezia.sources <<'EOF'
 Types: deb
 URIs: https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu
