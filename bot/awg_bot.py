@@ -445,6 +445,16 @@ def ensure_vanilla_client_dirs():
             os.makedirs(os.path.join(base, tree, svc), exist_ok=True)
 
 
+def run_export(conf: str, name: str, outdir: str) -> tuple:
+    """awg-export.py: сперва venv-python бота, при неудаче — системный python3
+    (segno/qrcode могут стоять только в одном из них). Возвращает (rc, лог)."""
+    cmd_tail = [EXPORT_PY, conf, "--name", name, "--outdir", outdir, "--all"]
+    rc, out, err = run([PY] + cmd_tail, timeout=60)
+    if rc != 0 and PY != "python3":
+        rc, out, err = run(["python3"] + cmd_tail, timeout=60)
+    return rc, (err or out or "").strip()
+
+
 async def send_vanilla_wg_files(chat: int, name: str):
     """Стоковый WG-клиент: для обоих туннелей (antizapret split + vpn full)
     отдаём обфусцированный «-am» .conf, QR и ссылку vpn:// для приложения Amnezia.
@@ -474,9 +484,16 @@ async def send_vanilla_wg_files(chat: int, name: str):
                                 caption=f"📄 {label} — AmneziaWG (сток)")
         # сгенерировать QR (.png) и vpn:// (.vpn + -vpn.png) рядом с конфигом
         base = os.path.splitext(conf)[0]                 # …/svc-name-(host)-am
-        run([PY, EXPORT_PY, conf, "--name", os.path.basename(base),
-             "--outdir", os.path.dirname(conf), "--all"], timeout=60)
+        rc, elog = run_export(conf, os.path.basename(base), os.path.dirname(conf))
         qr, vpn = base + ".png", base + ".vpn"
+        if rc != 0 and not (os.path.exists(qr) or os.path.exists(vpn)):
+            hint = ("нет модуля QR — выполните: "
+                    "<code>/opt/antizapret-awg/venv/bin/pip install segno</code>"
+                    if "ModuleNotFoundError" in elog or "ImportError" in elog else "")
+            await bot.send_message(
+                chat, f"⚠️ {label}: QR/URI не сгенерированы. {hint}\n"
+                      f"<code>{html.escape(elog[-500:])}</code>", parse_mode="HTML")
+            continue
         if os.path.exists(qr):
             await bot.send_photo(chat, FSInputFile(qr),
                                  caption=f"📱 {label}: QR для AmneziaWG")
@@ -701,8 +718,7 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         else:
             conf = os.path.join(CLIENT_DIR, svc, f"{svc}-{name}-am.conf")
             if os.path.exists(conf):
-                run([PY, EXPORT_PY, conf, "--name", f"{svc}-{name}",
-                     "--outdir", os.path.dirname(conf), "--all"])
+                run_export(conf, f"{svc}-{name}", os.path.dirname(conf))
             await send_awg_files(c.message.chat.id, svc, name)
         # после файлов — заново открыть меню отдельным сообщением
         await bot.send_message(c.message.chat.id, menu_header(),
