@@ -74,8 +74,6 @@ flowchart LR
 bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/GubernievS/AntiZapret-VPN/main/setup.sh)
 ```
 
-В анкете `setup.sh` включи WireGuard (он останется работать параллельно AmneziaWG) и OpenVPN. Сервер перезагрузится.
-
 > Если официальный установщик у тебя падает из-за просроченного GPG-ключа OpenVPN, поставь базу через наш скрипт — он этот случай обходит: `bash <(curl -fsSL https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh) --install-base`
 
 **Шаг 2. Слой AmneziaWG 2.0** (после перезагрузки, без ребута):
@@ -174,10 +172,6 @@ awg-backup restore файл.tar.gz
 
 Доступ — только по whitelist `AWG_BOT_ADMINS`. Бот ставится в Шаге 2 либо доустанавливается позже через `--install-bot`.
 
-<!-- Скриншоты: добавь свои в docs/img/ и вставь сюда, например:
-![Меню бота](docs/img/bot-menu.png)
-![Инфо о сервере](docs/img/bot-server.png)
--->
 
 ## Настройки обфускации
 
