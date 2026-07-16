@@ -247,6 +247,12 @@ def do_run(mode: str, answers_file: str, status: str, logpath: str) -> int:
         return 1
     setup_path = os.path.join(WORKDIR, "setup.sh")
     text = open(setup_path, encoding="utf-8").read()
+    # зафиксировать хэш кода setup.sh, на котором обновлялись (для check-updates)
+    try:
+        open("/opt/antizapret-awg/.az-setup-sha", "w", encoding="utf-8").write(
+            hashlib.sha256(text.encode()).hexdigest())
+    except OSError:
+        pass
     text = text.replace("[signed-by=", "[trusted=yes signed-by=")
     text = text.replace("curl -fL --connect-timeout 30",
                         "curl -fL --connect-timeout 30 --retry 6 --retry-delay 3 --retry-all-errors")
@@ -330,40 +336,146 @@ def do_run(mode: str, answers_file: str, status: str, logpath: str) -> int:
                      error=f"setup.sh завершился с кодом {child.exitstatus}")
         return 1
 
-    # 5) вернуть слой AmneziaWG 2.0 (drop-in на antizapret.service тоже сработает,
-    #    но прогоняем явно и дожидаемся)
+    # 5) НЕ трогаем сеть до перезагрузки. Реинтеграцию слоя, регенерацию клиентов
+    # и проверку маршрутизации делаем ПОСЛЕ ребута — когда antizapret.service,
+    # kresd и все интерфейсы поднялись начисто. Запускать reintegrate/regen-all
+    # сейчас (сервисы ещё только `enable`нуты, но не `start`ованы setup.sh) — это
+    # и ломало DNS/split: половина стека переинициализировалась в промежуточном
+    # состоянии. На загрузке всё уже подхватят drop-in antizapret.service,
+    # awg-reintegrate.service и хук custom-up.sh — как и работало раньше.
     write_status(status, phase="reintegrate", answered=answered)
-    log_line(logf, "awg-reintegrate — возврат слоя AmneziaWG 2.0…")
-    sh([REINTEGRATE], timeout=300)
-
-    # 5a) КРИТИЧНО для альтернативных диапазонов (172.x / 198.18.x): split-routing
-    # в клиентских конфигах опирается на /etc/wireguard/ips (там FAKE_IP-диапазон),
-    # который setup.sh перегенерировал под текущие ответы. Старые клиентские .conf
-    # содержат прежние AllowedIPs → после смены диапазона split ломается. Поэтому
-    # пересобираем клиентов слоя из свежего ips-файла.
-    reg = sh(["/opt/antizapret-awg/client-awg.sh", "regen-all"], timeout=300)
-    log_line(logf, f"regen-all клиентов слоя: rc={reg.returncode}")
-
-    # 5b) верификация split-routing: up.sh должен был поставить ANTIZAPRET-MAPPING
-    # и CONNMARK для клиентской подсети. Если их нет — предупреждаем в отчёте
-    # (не рушим: сервер уедет в reboot, где up.sh отработает начисто).
-    split_ok = True
-    try:
-        rules = sh(["iptables", "-w", "-t", "nat", "-S"], timeout=30).stdout
-        if "ANTIZAPRET-MAPPING" not in rules:
-            split_ok = False
-    except Exception:  # noqa: BLE001
-        pass
-    if not split_ok:
-        log_line(logf, "⚠️ ANTIZAPRET-MAPPING не найден до reboot — проверится после")
+    install_postboot_oneshot(logpath)
+    log_line(logf, "post-boot реинтеграция и regen-all запланированы на следующую загрузку")
 
     # 6) отложенная перезагрузка: минута на отчёт бота
     write_status(status, phase="done", answered=answered, reboot_pending=True,
-                 reported=False, split_ok=split_ok,
+                 reported=False,
                  alt_ip=(build_answers(mode, answers_file).get("ALTERNATIVE_CLIENT_IP") == "y"))
     log_line(logf, "✅ обновление завершено, перезагрузка через 1 минуту (shutdown -r +1)")
     sh(["shutdown", "-r", "+1", "AntiZapret full update — reboot"], timeout=30)
     return 0
+
+
+def install_postboot_oneshot(logpath: str):
+    """Установить systemd one-shot, который ПОСЛЕ перезагрузки (когда стек AntiZapret
+    поднялся) один раз: дождётся antizapret.service, вернёт слой (awg-reintegrate),
+    пересоберёт клиентов слоя под свежие маршруты и самоудалится. Так регенерация
+    клиентов и любые операции со слоем происходят на полностью готовой системе, а
+    не в промежуточном состоянии до ребута."""
+    unit = "/etc/systemd/system/az-postboot-reintegrate.service"
+    script = "/opt/antizapret-awg/az-postboot.sh"
+    try:
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(
+                "#!/usr/bin/env bash\n"
+                "# одноразовая пост-ребут реинтеграция после полного обновления\n"
+                "set +e\n"
+                "LOG=/var/log/az-postboot.log\n"
+                "echo \"[postboot $(date '+%H:%M:%S')] старт\" >>\"$LOG\"\n"
+                "# дождаться, пока antizapret.service активен и kresd отвечает\n"
+                "for i in $(seq 1 60); do\n"
+                "    systemctl is-active --quiet antizapret && break\n"
+                "    sleep 2\n"
+                "done\n"
+                "sleep 3\n"
+                "/opt/antizapret-awg/awg-reintegrate.sh >>\"$LOG\" 2>&1\n"
+                "# ПРИМЕЧАНИЕ: клиентов НЕ пересобираем — при полном обновлении\n"
+                "# обфускация и ключи не менялись, а split-маршруты клиенты берут\n"
+                "# из своего AllowedIPs, который у уже выданных конфигов корректен.\n"
+                "# Пересборка здесь ломала DNS/handshake в промежуточном состоянии.\n"
+                "echo \"[postboot $(date '+%H:%M:%S')] готово\" >>\"$LOG\"\n"
+                "# самоудаление\n"
+                "systemctl disable az-postboot-reintegrate.service >>\"$LOG\" 2>&1\n"
+                "rm -f /etc/systemd/system/az-postboot-reintegrate.service "
+                "/opt/antizapret-awg/az-postboot.sh\n"
+            )
+        os.chmod(script, 0o755)
+        with open(unit, "w", encoding="utf-8") as f:
+            f.write(
+                "[Unit]\n"
+                "Description=AntiZapret-AWG post-update reintegration (one-shot)\n"
+                "After=antizapret.service network-online.target\n"
+                "Wants=network-online.target\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                f"ExecStart={script}\n\n"
+                "[Install]\n"
+                "WantedBy=multi-user.target\n"
+            )
+        sh(["systemctl", "daemon-reload"], timeout=30)
+        sh(["systemctl", "enable", "az-postboot-reintegrate.service"], timeout=30)
+    except Exception as e:  # noqa: BLE001
+        # не критично: даже без one-shot слой вернут drop-in + awg-reintegrate.service
+        try:
+            open(logpath, "a").write(f"[runner] one-shot не установлен: {e}\n")
+        except OSError:
+            pass
+
+
+def _remote_file_sha(url: str) -> str:
+    r = sh(["curl", "-fsSL", "--retry", "3", url], timeout=60)
+    if r.returncode != 0 or not r.stdout:
+        return ""
+    return hashlib.sha256(r.stdout.encode()).hexdigest()
+
+
+def _local_file_sha(path: str) -> str:
+    try:
+        return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _remote_head_sha(repo: str, branch: str = "main") -> str:
+    """Хэш последнего коммита ветки через git ls-remote (без клона)."""
+    r = sh(["git", "ls-remote", repo, f"refs/heads/{branch}"], timeout=60)
+    if r.returncode == 0 and r.stdout:
+        return r.stdout.split()[0][:12]
+    return ""
+
+
+def check_updates() -> dict:
+    """Есть ли на гитхабе изменения КОДА (не списков) — AntiZapret и слоя.
+    AntiZapret: сравниваем setup.sh (код установщика) upstream vs локальный.
+    Слой: сравниваем HEAD ветки форка с сохранённым в /opt/antizapret-awg/.layer-rev.
+    Списки блокировок здесь НЕ учитываются — они меняются постоянно и обновляются
+    отдельной кнопкой doall."""
+    res = {"antizapret": {}, "layer": {}}
+
+    # AntiZapret: код setup.sh
+    up_sha = _remote_file_sha(
+        "https://raw.githubusercontent.com/GubernievS/AntiZapret-VPN/main/setup.sh")
+    loc_sha = _local_file_sha("/root/antizapret/setup.sh")
+    if not loc_sha:
+        # setup.sh не сохраняется на сервере после установки — сравниваем с
+        # хэшем, зафиксированным при последнем обновлении через бота
+        loc_sha = ""
+        try:
+            loc_sha = open("/opt/antizapret-awg/.az-setup-sha",
+                           encoding="utf-8").read().strip()
+        except OSError:
+            pass
+    res["antizapret"] = {
+        "remote": up_sha[:12], "local": loc_sha[:12],
+        "changed": bool(up_sha) and up_sha != loc_sha,
+        "known": bool(loc_sha),
+    }
+
+    # Слой: HEAD ветки форка
+    layer_remote = _remote_head_sha(
+        "https://github.com/fageoner/Antizapret-AWG-2.0.git")
+    layer_local = ""
+    try:
+        layer_local = open("/opt/antizapret-awg/.layer-rev",
+                           encoding="utf-8").read().strip()
+    except OSError:
+        pass
+    res["layer"] = {
+        "remote": layer_remote, "local": layer_local,
+        "changed": bool(layer_remote) and layer_remote != layer_local,
+        "known": bool(layer_local),
+    }
+    return res
 
 
 def dump_current() -> dict:
@@ -376,7 +488,7 @@ def dump_current() -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["preflight", "run", "dump-current"])
+    ap.add_argument("action", choices=["preflight", "run", "dump-current", "check-updates"])
     ap.add_argument("--mode", choices=["current", "defaults"], default="current")
     ap.add_argument("--answers", default="/opt/antizapret-awg/setup-answers.env")
     ap.add_argument("--status", default=DEFAULT_STATUS)
@@ -384,6 +496,9 @@ def main():
     a = ap.parse_args()
     if a.action == "preflight":
         print(json.dumps(preflight(), ensure_ascii=False))
+        return 0
+    if a.action == "check-updates":
+        print(json.dumps(check_updates(), ensure_ascii=False))
         return 0
     if a.action == "dump-current":
         print(json.dumps(dump_current(), ensure_ascii=False))

@@ -239,9 +239,88 @@ def poll(dump_override: dict = None):
                         c.execute("""INSERT INTO connections(pubkey,ts,ip,rx_start,tx_start)
                                      VALUES(?,?,?,?,?)""", (pk, now, cur_ip, p["rx"], p["tx"]))
                         new_ips.add(cur_ip)
+        # ── OpenVPN: статус-логи AntiZapret (status-version 1). Пишем в те же
+        # таблицы с origin='openvpn' и синтетическим ключом ovpn:<tunnel>:<cn>,
+        # чтобы клиент получил ту же историю/гео/трафик, что и WireGuard.
+        for entry in parse_openvpn_status():
+            pk = f"ovpn:{entry['tunnel']}:{entry['cn']}"
+            now_hs = now                       # активная сессия = «онлайн сейчас»
+            c.execute("""INSERT INTO peers(pubkey,name,iface,origin,first_seen,last_seen)
+                         VALUES(?,?,?,?,?,?)
+                         ON CONFLICT(pubkey) DO UPDATE SET name=?,iface=?,origin=?,last_seen=?""",
+                      (pk, entry["cn"], entry["tunnel"], "openvpn", now, now,
+                       entry["cn"], entry["tunnel"], "openvpn", now))
+            row = c.execute("SELECT last_rx,last_tx FROM totals WHERE pubkey=?",
+                            (pk,)).fetchone()
+            rx, tx = entry["rx"], entry["tx"]
+            if row is None:
+                c.execute("""INSERT INTO totals(pubkey,rx_life,tx_life,last_rx,last_tx,
+                             last_handshake,endpoint) VALUES(?,?,?,?,?,?,?)""",
+                          (pk, rx, tx, rx, tx, now_hs, entry["ip"]))
+                drx, dtx = rx, tx
+            else:
+                last_rx, last_tx = row
+                # OpenVPN обнуляет счётчики при переподключении → дельта=текущее
+                drx = rx - last_rx if rx >= last_rx else rx
+                dtx = tx - last_tx if tx >= last_tx else tx
+                c.execute("""UPDATE totals SET rx_life=rx_life+?, tx_life=tx_life+?,
+                             last_rx=?, last_tx=?, last_handshake=?, endpoint=?
+                             WHERE pubkey=?""",
+                          (drx, dtx, rx, tx, now_hs, entry["ip"], pk))
+            if drx or dtx:
+                c.execute("""INSERT INTO daily(pubkey,day,rx,tx) VALUES(?,?,?,?)
+                             ON CONFLICT(pubkey,day) DO UPDATE SET rx=rx+?, tx=tx+?""",
+                          (pk, day, drx, dtx, drx, dtx))
+            c.execute("INSERT INTO samples(ts,pubkey,rx,tx,handshake) VALUES(?,?,?,?,?)",
+                      (now, pk, rx, tx, now_hs))
+            if entry["ip"] and entry["ip"] not in ("(none)", ""):
+                last_conn = c.execute(
+                    "SELECT ip FROM connections WHERE pubkey=? ORDER BY ts DESC LIMIT 1",
+                    (pk,)).fetchone()
+                if last_conn is None or last_conn[0] != entry["ip"]:
+                    c.execute("""INSERT INTO connections(pubkey,ts,ip,rx_start,tx_start)
+                                 VALUES(?,?,?,?,?)""", (pk, now, entry["ip"], rx, tx))
+                    new_ips.add(entry["ip"])
     for ip in new_ips:      # гео-резолв вне транзакции (свои соединения к БД)
         geoip(ip)
     prune(SAMPLE_RETENTION_DAYS)
+
+
+OVPN_STATUS_DIR = os.environ.get("AWG_OVPN_STATUS_DIR", "/etc/openvpn/server/logs")
+
+
+def parse_openvpn_status() -> list:
+    """Разобрать все status-логи OpenVPN AntiZapret (status-version 1).
+    Возвращает [{tunnel, cn, ip, rx, tx, since}] по активным сессиям."""
+    import glob as _glob
+    out = []
+    for path in _glob.glob(os.path.join(OVPN_STATUS_DIR, "*-status.log")):
+        tunnel = os.path.basename(path).replace("-status.log", "")
+        try:
+            lines = open(path, encoding="utf-8", errors="ignore").read().splitlines()
+        except OSError:
+            continue
+        in_clients = False
+        for ln in lines:
+            if ln.startswith("OpenVPN CLIENT LIST"):
+                in_clients = True
+                continue
+            if ln.startswith("ROUTING TABLE") or ln.startswith("GLOBAL STATS"):
+                in_clients = False
+                continue
+            if not in_clients or ln.startswith(("Updated", "Common Name")) or "," not in ln:
+                continue
+            parts = ln.split(",")
+            if len(parts) < 5:
+                continue
+            try:
+                rx, tx = int(parts[2]), int(parts[3])
+            except ValueError:
+                continue
+            out.append({"tunnel": tunnel, "cn": parts[0],
+                        "ip": parts[1].rsplit(":", 1)[0], "rx": rx, "tx": tx,
+                        "since": parts[4]})
+    return out
 
 
 def geoip(ip: str) -> dict:
