@@ -44,7 +44,6 @@ RUNNER_PY = os.environ.get("AWG_RUNNER_PY", "/opt/antizapret-awg/az_setup_runner
 DOALL_SH = os.environ.get("AWG_DOALL_SH", "/root/antizapret/doall.sh")
 SERVICES_ENV = os.environ.get("AWG_SERVICES_ENV", "/etc/amnezia/amneziawg/services.env")
 STATUS_FILE = os.environ.get("AWG_UPDATE_STATUS", "/opt/antizapret-awg/az-update-status.json")
-ANSWERS_FILE = os.environ.get("AWG_ANSWERS_FILE", "/opt/antizapret-awg/setup-answers.env")
 INSTALL_SH_URL = os.environ.get(
     "AWG_INSTALL_SH_URL",
     "https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh")
@@ -68,6 +67,11 @@ _pending_restore = set()
 
 class Flow(StatesGroup):
     name = State()
+    azcfg_input = State()
+
+
+# какой config-файл AntiZapret редактирует админ (chat_id → имя файла)
+_azcfg_edit = {}
 
 
 def is_admin(cid: int) -> bool:
@@ -299,58 +303,6 @@ async def watch_unit(c: CallbackQuery, unit: str, logfile: str, title: str,
                kb([back(back_cb)]), stamp=True)
 
 
-PHASE_RU = {"backup": "💾 бэкап клиентов", "clone": "📥 загрузка апстрима",
-            "questions": "✍️ анкета", "installing": "⚙️ установка",
-            "reintegrate": "🔁 возврат AWG 2.0", "done": "✅ завершено",
-            "failed": "❌ ошибка"}
-
-
-# редактируемые параметры полного обновления: VAR → (лейбл, [(значение, подпись)])
-# показываются в боте перед запуском; выбор пишется в setup-answers.env (override).
-EDITABLE_PARAMS = [
-    ("ALTERNATIVE_CLIENT_IP", "Альт. диапазон клиентских IP (172.x)",
-     [("n", "10.x (стандарт)"), ("y", "172.x (альтернатива)")]),
-    ("ALTERNATIVE_FAKE_IP", "Альт. диапазон fake-IP (198.18.x)",
-     [("n", "10.30.x (стандарт)"), ("y", "198.18.x (альтернатива)")]),
-    ("ANTIZAPRET_DNS", "DNS для AntiZapret",
-     [("1", "1"), ("2", "2"), ("3", "3"), ("4", "4")]),
-    ("ANTIZAPRET_WARP", "WARP для AntiZapret",
-     [("n", "выкл"), ("y", "вкл")]),
-    ("VPN_WARP", "WARP для полного VPN",
-     [("n", "выкл"), ("y", "вкл")]),
-    ("BLOCK_ADS", "Блокировка рекламы/трекеров",
-     [("n", "выкл"), ("y", "вкл")]),
-    ("ROUTE_ALL", "Маршрутизировать все домены",
-     [("n", "выкл"), ("y", "вкл")]),
-    ("OPENVPN_DUPLICATE", "OpenVPN: один конфиг на неск. устройств",
-     [("n", "запретить"), ("y", "разрешить")]),
-    ("CLIENT_ISOLATION", "Изоляция клиентов друг от друга",
-     [("n", "выкл"), ("y", "вкл")]),
-]
-# сессионные оверрайды параметров, ключ = admin chat_id
-_param_overrides = {}
-
-
-def load_answers_file(path: str) -> dict:
-    vals = {}
-    try:
-        for line in open(path, encoding="utf-8"):
-            line = line.strip()
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                vals[k.strip()] = v.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return vals
-
-
-def dump_current_answers() -> dict:
-    rc, out, err = run([PY, RUNNER_PY, "dump-current"], timeout=60)
-    try:
-        return json.loads(out)
-    except Exception:  # noqa: BLE001
-        return {}
-
 
 def kb(rows) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -386,6 +338,7 @@ def main_menu() -> InlineKeyboardMarkup:
     return kb([
         [("👥 Клиенты", "clients:menu")],
         [("ℹ️ Информация", "info:server")],
+        [("⚙️ Настройки AntiZapret", "azcfg:menu")],
         [("🔄 Обновление", "upd:menu")],
         [("🛡 Обфускация", "obf:menu")],
         [("💾 Бэкап", "backup:run"), ("♻️ Восстановить", "restore:ask")],
@@ -396,7 +349,6 @@ def upd_menu() -> InlineKeyboardMarkup:
     return kb([
         [("🔎 Проверить обновления", "upd:check")],
         [("📋 Обновить списки АнтиЗапрета", "upd:doall")],
-        [("⬆️ Полное обновление AntiZapret", "upd:full")],
         [("🧬 Обновить AWG 2.0 (код слоя)", "upd:awg")],
         [("🛠 Перенастроить обфускацию", "reconf:preset")],
         back(),
@@ -484,15 +436,32 @@ async def send_awg_files(chat: int, svc: str, name: str):
 
 
 async def send_vanilla_wg_files(chat: int, name: str):
-    """Стоковый WG-клиент: отдаём только обфусцированные junk-only «-am» конфиги
-    для обоих туннелей (antizapret split + vpn full). Plain-WG файлы не шлём."""
+    """Стоковый WG-клиент: для обоих туннелей (antizapret split + vpn full)
+    отдаём обфусцированный «-am» .conf, QR и ссылку vpn:// для приложения Amnezia.
+    URI/QR генерим на лету через awg-export.py из готового -am конфига ванили."""
     sent = 0
     for svc, label in (("antizapret", "AntiZapret (split)"), ("vpn", "Полный VPN")):
         conf = find_vanilla_file(VANILLA_AM_DIR, svc, name, "-am.conf")
-        if conf:
-            await bot.send_document(chat, FSInputFile(conf, filename=os.path.basename(conf)),
-                                    caption=f"📄 {label} — AmneziaWG (сток)")
-            sent += 1
+        if not conf:
+            continue
+        sent += 1
+        await bot.send_document(chat, FSInputFile(conf, filename=os.path.basename(conf)),
+                                caption=f"📄 {label} — AmneziaWG (сток)")
+        # сгенерировать QR (.png) и vpn:// (.vpn + -vpn.png) рядом с конфигом
+        base = os.path.splitext(conf)[0]                 # …/svc-name-(host)-am
+        run([PY, EXPORT_PY, conf, "--name", os.path.basename(base),
+             "--outdir", os.path.dirname(conf), "--all"], timeout=60)
+        qr, vpn = base + ".png", base + ".vpn"
+        if os.path.exists(qr):
+            await bot.send_photo(chat, FSInputFile(qr),
+                                 caption=f"📱 {label}: QR для AmneziaWG")
+        if os.path.exists(vpn):
+            uri = open(vpn, encoding="utf-8").read().strip()
+            await bot.send_message(chat, f"🔗 <b>{label} — ссылка vpn://</b> (Amnezia):",
+                                   parse_mode="HTML")
+            for chunk in (uri[i:i + 3800] for i in range(0, len(uri), 3800)):
+                await bot.send_message(chat, f"<code>{html.escape(chunk)}</code>",
+                                       parse_mode="HTML")
     if not sent:
         await bot.send_message(chat, "⚠️ «-am» конфиги стокового клиента не найдены.")
 
@@ -584,6 +553,45 @@ async def ask_name(c: CallbackQuery, state: FSMContext, **data):
     await state.set_data(data)
     await show(c, "✍️ Введи имя клиента (буквы, цифры, _ , -):",
                kb([[("✖️ Отмена", "menu:main")]]))
+
+
+@dp.message(Flow.azcfg_input, F.text)
+async def on_azcfg_input(m: Message, state: FSMContext):
+    if not is_admin(m.chat.id):
+        return
+    which = _azcfg_edit.get(m.chat.id)
+    await state.clear()
+    if not which:
+        return await m.answer(menu_header(), parse_mode="HTML", reply_markup=main_menu())
+    path = f"/root/antizapret/config/{which}.txt"
+    try:
+        existing = ([l.rstrip("\n") for l in open(path, encoding="utf-8")]
+                    if os.path.exists(path) else [])
+    except OSError:
+        existing = []
+    added, removed = 0, 0
+    for raw in m.text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("-"):
+            tgt = line[1:].strip()
+            if tgt in existing:
+                existing = [x for x in existing if x != tgt]
+                removed += 1
+        elif line not in existing:
+            existing.append(line)
+            added += 1
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(existing) + ("\n" if existing else ""))
+    except OSError as e:
+        return await m.answer(f"❌ Не удалось записать: {e}")
+    await m.answer(f"✅ <b>{which}.txt</b>: добавлено {added}, удалено {removed}.\n"
+                   "Чтобы применить — «📋 Обновить списки».",
+                   parse_mode="HTML",
+                   reply_markup=kb([[("📋 Обновить списки", "upd:doall")],
+                                    [("⚙️ К настройкам", "azcfg:menu")]]))
 
 
 # ── все callbacks (через show() — редактирование одного сообщения) ───────────
@@ -739,16 +747,114 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
 
         def _line(name, info, action):
             if not info.get("known"):
-                return f"• {name}: не с чем сравнить (обновись через бота — запомню версию)"
+                return f"• {name}: не с чем сравнить (обновись — запомню версию)"
             if info.get("changed"):
                 return f"• {name}: 🟢 есть изменения кода → {action}"
             return f"• {name}: ✅ актуально, обновлять не обязательно"
 
         txt = ("🔎 <b>Проверка обновлений (код, не списки)</b>\n\n"
-               + _line("AntiZapret", az, "«Полное обновление»") + "\n"
-               + _line("Слой AWG 2.0", lay, "«Обновить AWG 2.0»") + "\n\n"
-               "Списки блокировок обновляются отдельно кнопкой «Обновить списки».")
+               + _line("AntiZapret", az, "обнови из терминала (см. ниже)") + "\n"
+               + _line("Слой AWG 2.0", lay, "кнопка «Обновить AWG 2.0»") + "\n\n"
+               "Полное обновление AntiZapret делается штатной командой в терминале "
+               "сервера:\n<code>bash &lt;(wget -qO- --no-hsts --inet4-only "
+               "https://raw.githubusercontent.com/GubernievS/AntiZapret-VPN/main/"
+               "setup.sh)</code>\n\n"
+               "Списки блокировок — отдельной кнопкой «Обновить списки».")
         return await show(c, txt, kb([back("upd:menu")]))
+
+    # ═══ НАСТРОЙКИ ANTIZAPRET (штатные функции GubernievS) ═══════════════════
+
+    if d == "azcfg:menu":
+        rows = []
+        if has_openvpn():
+            rows.append([("🩹 Патч OpenVPN (анти-цензура)", "azcfg:patch")])
+            rows.append([("⚡ OpenVPN DCO вкл/выкл", "azcfg:dco")])
+        rows.append([("📝 include-hosts (в туннель)", "azcfg:edit:include-hosts")])
+        rows.append([("📝 exclude-hosts (мимо туннеля)", "azcfg:edit:exclude-hosts")])
+        rows.append([("📝 include-ips (IP в туннель)", "azcfg:edit:include-ips")])
+        rows.append(back())
+        note = ("⚙️ <b>Настройки AntiZapret</b>\n"
+                "Штатные функции. Правки списков хостов/IP применяются после "
+                "«🔄 Обновление → 📋 Обновить списки».")
+        if not has_openvpn():
+            note += "\n\n(OpenVPN не установлен — патч и DCO скрыты.)"
+        return await show(c, note, kb(rows))
+
+    if d == "azcfg:patch":
+        return await show(c, "🩹 <b>Анти-цензурный патч OpenVPN</b> (только UDP)\n"
+                          "0) Нет — снять патч\n"
+                          "1) Strong — рекомендуется\n"
+                          "2) Error-free — если Strong рвёт связь (роутеры MikroTik)",
+                          kb([[("0", "azcfg:patchset:0"), ("1", "azcfg:patchset:1"),
+                               ("2", "azcfg:patchset:2")], back("azcfg:menu")]))
+    if d.startswith("azcfg:patchset:"):
+        val = d.split(":")[2]
+        logf = f"{LOG_DIR}/az-patch-openvpn.log"
+        rc, _, err = start_bg_unit("az-patch-openvpn",
+                                   ["bash", "/root/antizapret/patch-openvpn.sh", val], logf)
+        if rc != 0:
+            return await show(c, f"❌ {html.escape(err)[:300]}", kb([back("azcfg:menu")]))
+        return await watch_unit(c, "az-patch-openvpn", logf,
+                                f"🩹 <b>Патч OpenVPN → {val}…</b>",
+                                "✅ Готово (клиентам может понадобиться переподключение).",
+                                back_cb="azcfg:menu")
+
+    if d == "azcfg:dco":
+        return await show(c, "⚡ <b>OpenVPN DCO</b> (Data Channel Offload, ускорение)\n"
+                          "Требуется OpenVPN 2.7.",
+                          kb([[("Включить", "azcfg:dcoset:y"),
+                               ("Выключить", "azcfg:dcoset:n")], back("azcfg:menu")]))
+    if d.startswith("azcfg:dcoset:"):
+        val = d.split(":")[2]
+        logf = f"{LOG_DIR}/az-dco.log"
+        rc, _, err = start_bg_unit("az-dco",
+                                   ["bash", "/root/antizapret/openvpn-dco.sh", val], logf)
+        if rc != 0:
+            return await show(c, f"❌ {html.escape(err)[:300]}", kb([back("azcfg:menu")]))
+        return await watch_unit(c, "az-dco", logf,
+                                f"⚡ <b>DCO → {'вкл' if val=='y' else 'выкл'}…</b>",
+                                "✅ Готово.", back_cb="azcfg:menu")
+
+    if d.startswith("azcfg:edit:"):
+        which = d.split(":", 2)[2]
+        path = f"/root/antizapret/config/{which}.txt"
+        cur = ""
+        try:
+            cur = open(path, encoding="utf-8").read().strip()
+        except OSError:
+            pass
+        shown = cur if cur else "(пусто)"
+        if len(shown) > 1500:
+            shown = shown[:1500] + "\n…(первые 1500 символов)"
+        titles = {"include-hosts": "домены В туннель",
+                  "exclude-hosts": "домены МИМО туннеля",
+                  "include-ips": "IP/подсети В туннель"}
+        return await show(c, f"📝 <b>{which}.txt</b> — {titles.get(which, '')}\n\n"
+                          f"<pre>{html.escape(shown)}</pre>\n\n"
+                          "После правок нужно «📋 Обновить списки».",
+                          kb([[("➕ Добавить строки", f"azcfg:add:{which}")],
+                              [("🗑 Очистить файл", f"azcfg:clear:{which}")],
+                              back("azcfg:menu")]))
+
+    if d.startswith("azcfg:add:"):
+        which = d.split(":", 2)[2]
+        _azcfg_edit[c.from_user.id] = which
+        await state.set_state(Flow.azcfg_input)
+        return await show(c, f"✏️ Пришли строки для добавления в <b>{which}.txt</b> "
+                          "(каждая с новой строки). Строка вида «-значение» — удалить её.",
+                          kb([back("azcfg:menu")]))
+
+    if d.startswith("azcfg:clear:"):
+        which = d.split(":", 2)[2]
+        path = f"/root/antizapret/config/{which}.txt"
+        try:
+            open(path, "w", encoding="utf-8").close()
+        except OSError as e:
+            return await show(c, f"❌ {e}", kb([back("azcfg:menu")]))
+        return await show(c, f"🗑 <b>{which}.txt</b> очищен.\n"
+                          "Применится после «📋 Обновить списки».",
+                          kb([[("📋 Обновить списки сейчас", "upd:doall")],
+                              back("azcfg:menu")]))
 
     # ── списки АнтиЗапрета (doall.sh) — быстро и безопасно
     if d == "upd:doall":
@@ -758,142 +864,6 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
             return await show(c, f"❌ {html.escape(err)[:400]}", kb([back("upd:menu")]))
         return await watch_unit(c, "az-doall", logf, "📋 <b>Обновление списков…</b>",
                                 "✅ Списки обновлены (custom-хук обновил и правила AWG 2.0).")
-
-    # ── полное обновление: предупреждение → префлайт → выбор режима → запуск
-    if d == "upd:full":
-        return await show(c, "⬆️ <b>Полное обновление AntiZapret</b>\n\n"
-                          "Что произойдёт:\n"
-                          "• клиенты сохранятся (бэкап → setup.sh восстановит сам);\n"
-                          "• слой AmneziaWG 2.0 вернётся автоматически;\n"
-                          "• в конце <b>сервер перезагрузится</b>, бот вернётся через "
-                          "~2–3 минуты и отчитается.\n\n"
-                          "Сначала проверю, не изменилась ли анкета апстрима.",
-                          kb([[("🔍 Проверить и продолжить", "updfull:preflight")],
-                              back("upd:menu")]))
-
-    if d == "updfull:preflight":
-        await show(c, "🔍 Проверяю анкету свежего setup.sh…", kb([back("upd:menu")]))
-        rc, out, err = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: run([PY, RUNNER_PY, "preflight"], timeout=180))
-        try:
-            pf = json.loads(out)
-        except Exception:  # noqa: BLE001
-            pf = {"ok": False, "error": (err or out)[:300], "unknown": []}
-        if pf.get("error"):
-            return await show(c, f"❌ Префлайт: {html.escape(pf['error'])}",
-                              kb([back("upd:menu")]))
-        if pf.get("ok"):
-            txt = (f"✅ Анкета известна полностью ({pf.get('total', '?')} вопросов).\n\n"
-                   "Как отвечать?")
-        else:
-            unk = "\n".join(f"  • {html.escape(u)}" for u in pf.get("unknown", [])[:10])
-            txt = (f"⚠️ Апстрим добавил незнакомые вопросы "
-                   f"({len(pf.get('unknown', []))}):\n{unk}\n\n"
-                   "На них будет принят <b>дефолт апстрима</b> (Enter). "
-                   "Известные вопросы — как выберешь ниже:")
-        return await show(c, txt, kb([
-            [("📄 Как настроено сейчас", "updfull:go:current")],
-            [("✏️ Изменить параметры", "updfull:edit")],
-            [("🆕 Все по умолчанию", "updfull:go:defaults")],
-            back("upd:menu")]))
-
-    # ── редактирование параметров перед обновлением (#2)
-    if d == "updfull:edit":
-        admin = c.from_user.id
-        cur = dump_current_answers()
-        ov = _param_overrides.setdefault(admin, {})
-        rows = []
-        for var, label, opts in EDITABLE_PARAMS:
-            val = ov.get(var, cur.get(var, "?"))
-            shown = dict(opts).get(val, val)
-            rows.append([(f"{label}: {shown}", f"updfull:pedit:{var}")])
-        rows.append([("💾 Запустить с этими параметрами", "updfull:go:edited")])
-        rows.append(back("updfull:preflight"))
-        return await show(c, "✏️ <b>Параметры полного обновления</b>\n"
-                          "Показаны текущие значения. Меняй что нужно — остальное "
-                          "останется как настроено.\n"
-                          "⚠️ Смена диапазонов IP потребует раздать клиентам новые "
-                          "конфиги.", kb(rows))
-
-    if d.startswith("updfull:pedit:"):
-        var = d.split(":", 2)[2]
-        admin = c.from_user.id
-        cur = dump_current_answers()
-        spec = next((p for p in EDITABLE_PARAMS if p[0] == var), None)
-        if not spec:
-            return await show(c, "Неизвестный параметр", kb([back("updfull:edit")]))
-        _, label, opts = spec
-        curval = _param_overrides.get(admin, {}).get(var, cur.get(var, "?"))
-        rows = []
-        for val, cap in opts:
-            mark = "✅ " if val == curval else ""
-            rows.append([(f"{mark}{cap}", f"updfull:pset:{var}:{val}")])
-        rows.append(back("updfull:edit"))
-        return await show(c, f"<b>{label}</b>\nТекущее: {dict(opts).get(curval, curval)}",
-                          kb(rows))
-
-    if d.startswith("updfull:pset:"):
-        _, _, var, val = d.split(":", 3)
-        _param_overrides.setdefault(c.from_user.id, {})[var] = val
-        # вернуться к списку параметров
-        c.data = "updfull:edit"
-        return await on_cb(c, state)
-
-    if d.startswith("updfull:go:"):
-        mode = d.split(":", 2)[2]
-        logf = f"{LOG_DIR}/az-full-update.log"
-        # режим edited: пишем оверрайды в answers-файл, запускаем поверх current
-        if mode == "edited":
-            ov = _param_overrides.get(c.from_user.id, {})
-            if not ov:
-                # нечего менять — эквивалентно current
-                mode = "current"
-            else:
-                try:
-                    with open(ANSWERS_FILE, "w", encoding="utf-8") as f:
-                        for k, v in ov.items():
-                            f.write(f"{k}={v}\n")
-                except OSError as e:
-                    return await show(c, f"❌ не удалось записать параметры: {e}",
-                                      kb([back("upd:menu")]))
-                mode = "current"          # оверрайды лягут поверх текущих ответов
-        else:
-            # чистый current/defaults — убираем возможный старый answers-файл
-            try:
-                os.path.exists(ANSWERS_FILE) and os.remove(ANSWERS_FILE)
-            except OSError:
-                pass
-        write_status_flag(phase="starting", reported=False)
-        rc, _, err = start_bg_unit(
-            "az-full-update",
-            [PY, RUNNER_PY, "run", "--mode", mode,
-             "--answers", ANSWERS_FILE, "--status", STATUS_FILE, "--log", logf], logf)
-        if rc != 0:
-            return await show(c, f"❌ {html.escape(err)[:400]}", kb([back("upd:menu")]))
-        # свой прогресс-цикл: фазы из статус-файла + хвост лога
-        title = "⬆️ <b>Полное обновление AntiZapret</b>"
-        started = time.time()
-        while unit_active("az-full-update") and time.time() - started < 95 * 60:
-            st = read_status()
-            phase = PHASE_RU.get(st.get("phase", ""), st.get("phase", "…"))
-            extra = f" · ответов: {st['answered']}" if "answered" in st else ""
-            await show(c, f"{title}\nФаза: {phase}{extra}\n"
-                          f"<pre>{html.escape(log_tail(logf, 10))}</pre>",
-                       kb([back("upd:menu")]), stamp=True)
-            await asyncio.sleep(5)
-        st = read_status()
-        if st.get("phase") == "done":
-            # НЕ ставим reported=True: этот флаг зарезервирован для отчёта ПОСЛЕ
-            # перезагрузки (report_pending при старте бота). Иначе после ребута
-            # подтверждение не придёт — баг «бот не вернулся».
-            return await show(c, f"{title}\n\n✅ Готово! Сервер перезагрузится "
-                              "через минуту, бот вернётся и подтвердит. "
-                              + ("⚠️ Были незнакомые вопросы — принят дефолт."
-                                 if st.get("had_unknown") else ""),
-                              kb([back()]))
-        return await show(c, f"{title}\n\n❌ {html.escape(str(st.get('error', 'см. лог')))}"
-                          f"\n<pre>{html.escape(log_tail(logf, 10))}</pre>",
-                          kb([back("upd:menu")]))
 
     # ── обновление кода слоя AWG 2.0 (install.sh --update)
     if d == "upd:awg":
@@ -1009,16 +979,6 @@ async def report_pending():
     st = read_status()
     # (сообщение, каким флагом пометить после успешной отправки)
     jobs = []
-    if st.get("phase") == "done" and st.get("reboot_pending") and not st.get("reported"):
-        extra = " ⚠️ Были незнакомые вопросы — принят дефолт апстрима." \
-            if st.get("had_unknown") else ""
-        jobs.append(("✅ <b>Полное обновление AntiZapret завершено</b>, сервер "
-                     "перезагружен, слой AmneziaWG 2.0 восстановлен." + extra,
-                     dict(reported=True, reboot_pending=False)))
-    elif st.get("phase") == "failed" and not st.get("reported"):
-        jobs.append(("❌ <b>Полное обновление AntiZapret не удалось</b>: "
-                     f"{html.escape(str(st.get('error', '')))[:400]}\n"
-                     "Лог: /var/log/az-full-update.log", dict(reported=True)))
     if st.get("awg_upd") == "ok" and not st.get("awg_reported"):
         jobs.append(("✅ <b>Слой AWG 2.0 обновлён</b>, бот перезапущен. "
                      "Клиенты и обфускация не менялись.",

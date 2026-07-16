@@ -18,7 +18,6 @@ Environment=AWG_OVPN_STATUS_DIR=/etc/openvpn/server/logs
 Environment=AWG_VANILLA_AM_DIR=/root/antizapret/client/amneziawg
 Environment=AWG_CLIENT_SH_LOCK=/run/antizapret-client.lock
 Environment=AWG_RUNNER_PY=/opt/antizapret-awg/az_setup_runner.py
-Environment=AWG_ANSWERS_FILE=/opt/antizapret-awg/setup-answers.env
 Environment=AWG_STATS_PY=/opt/antizapret-awg/awg_stats.py
 Environment=AWG_EXPORT_PY=/opt/antizapret-awg/awg-export.py
 Environment=AWG_VENV_PY=/opt/antizapret-awg/venv/bin/python
