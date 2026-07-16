@@ -435,13 +435,38 @@ async def send_awg_files(chat: int, svc: str, name: str):
             await bot.send_message(chat, f"<code>{html.escape(chunk)}</code>", parse_mode="HTML")
 
 
+def ensure_vanilla_client_dirs():
+    """Ваниль НЕ делает mkdir для /root/antizapret/client/* — каталоги приходят
+    из setup. Если их нет (старая установка, ручная чистка), рендер в client.sh
+    падает на редиректе '>' с ERR-trap. Создаём заранее — это безопасно."""
+    base = os.path.dirname(VANILLA_AM_DIR.rstrip("/"))
+    for tree in ("amneziawg", "wireguard"):
+        for svc in ("antizapret", "vpn"):
+            os.makedirs(os.path.join(base, tree, svc), exist_ok=True)
+
+
 async def send_vanilla_wg_files(chat: int, name: str):
     """Стоковый WG-клиент: для обоих туннелей (antizapret split + vpn full)
     отдаём обфусцированный «-am» .conf, QR и ссылку vpn:// для приложения Amnezia.
-    URI/QR генерим на лету через awg-export.py из готового -am конфига ванили."""
+    URI/QR генерим на лету через awg-export.py из готового -am конфига ванили.
+    Если файлов нет — самолечение: mkdir каталогов + повторный client.sh 4
+    (он идемпотентен: для существующего клиента ключи сохраняются, файлы
+    профилей пересоздаются заново)."""
+    def _find_all() -> dict:
+        return {svc: find_vanilla_file(VANILLA_AM_DIR, svc, name, "-am.conf")
+                for svc in ("antizapret", "vpn")}
+
+    confs = _find_all()
+    regen_tail = ""
+    if not all(confs.values()):
+        ensure_vanilla_client_dirs()
+        rc, out, err = run_client_sh(["4", name])
+        regen_tail = (err or out or "").strip()[-700:]
+        confs = _find_all()
+
     sent = 0
     for svc, label in (("antizapret", "AntiZapret (split)"), ("vpn", "Полный VPN")):
-        conf = find_vanilla_file(VANILLA_AM_DIR, svc, name, "-am.conf")
+        conf = confs.get(svc)
         if not conf:
             continue
         sent += 1
@@ -463,7 +488,16 @@ async def send_vanilla_wg_files(chat: int, name: str):
                 await bot.send_message(chat, f"<code>{html.escape(chunk)}</code>",
                                        parse_mode="HTML")
     if not sent:
-        await bot.send_message(chat, "⚠️ «-am» конфиги стокового клиента не найдены.")
+        msg = "⚠️ «-am» конфиги стокового клиента не найдены и пересоздать их не удалось."
+        if not os.path.exists("/etc/wireguard/templates/antizapret-client-am.conf"):
+            msg += ("\n\nПричина: на сервере нет шаблонов "
+                    "<code>/etc/wireguard/templates/*-am.conf</code> — установленный "
+                    "AntiZapret старой версии, без AmneziaWG-профилей. "
+                    "Обновите AntiZapret из терминала (🔎 Проверка обновлений подскажет команду), "
+                    "затем нажмите «Скачать» ещё раз.")
+        elif regen_tail:
+            msg += f"\n\nВывод client.sh:\n<code>{html.escape(regen_tail)}</code>"
+        await bot.send_message(chat, msg, parse_mode="HTML")
 
 
 async def send_ovpn_files(chat: int, name: str):
