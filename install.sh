@@ -151,6 +151,17 @@ install_base() {
 # ════════════════════════════════════════════════════════════════════════════
 #  ШАГ 2: слой AmneziaWG параллельно установленному AntiZapret (без перезагрузки)
 # ════════════════════════════════════════════════════════════════════════════
+# надёжный y/n: читает с терминала (важно при bash <(curl…), где stdin — не tty),
+# срезает пробелы/CR, нормализует регистр. Принимает y/yes/д/да.
+ask_yn() {  # ask_yn "<вопрос>" <default: y|n> → 0 если да
+    local q="$1" def="${2:-n}" a src=/dev/stdin
+    [ -r /dev/tty ] && src=/dev/tty
+    read -rp "$q" a < "$src" || true
+    a="$(printf '%s' "$a" | tr -d '[:space:]\r' | tr '[:upper:]' '[:lower:]')"
+    [ -z "$a" ] && a="$def"
+    case "$a" in y|yes|д|да) return 0 ;; *) return 1 ;; esac
+}
+
 parse_cli_ports() {  # "1234,5678" → AZ_PORT_CHOICE/VPN_PORT_CHOICE
     AZ_PORT_CHOICE="${CLI_PORTS%%,*}"; VPN_PORT_CHOICE="${CLI_PORTS##*,}"
     if ! valid_port "$AZ_PORT_CHOICE" || ! valid_port "$VPN_PORT_CHOICE" \
@@ -228,12 +239,13 @@ collect_choices() {
     fi
     if [ "$NO_BOT" = 0 ]; then
         echo
-        read -rp "Установить Telegram-бот (клиенты OpenVPN+AmneziaWG, статистика, бэкап)? [y/N]: " b
-        case "${b:-N}" in y|Y)
+        if ask_yn "Установить Telegram-бот (клиенты OpenVPN+AmneziaWG, статистика, бэкап)? [y/N]: " n; then
             read -rp "  Токен бота (@BotFather): " BOT_TOKEN
             read -rp "  Твой chat_id: " BOT_ADMINS
-            [ -n "$BOT_TOKEN" ] && [ -n "$BOT_ADMINS" ] && BOT_INSTALL=1 || log "Токен/admin пустые — бот пропущен" ;;
-        esac
+            BOT_TOKEN="$(printf '%s' "$BOT_TOKEN" | tr -d '[:space:]\r')"
+            BOT_ADMINS="$(printf '%s' "$BOT_ADMINS" | tr -d '[:space:]\r')"
+            [ -n "$BOT_TOKEN" ] && [ -n "$BOT_ADMINS" ] && BOT_INSTALL=1 || log "Токен/admin пустые — бот пропущен"
+        fi
     fi
     mkdir -p "$(dirname "$STATE")"; umask 077
     cat > "$STATE" <<EOF
@@ -395,6 +407,14 @@ migrate_layer() {
 
 # ════════════════════════════════════════════════════════════════════════════
 main() {
+    # При установке через bash <(curl…) stdin занят потоком скрипта, и read
+    # берёт данные оттуда, а не с клавиатуры (симптом: «y» будто проигнорирован).
+    # Если есть управляющий терминал и мы в интерактивном сценарии — привязываем
+    # stdin к нему на весь диалог.
+    if [ -r /dev/tty ] && [ "$UPDATE" = 0 ] && [ "$MIGRATE" = 0 ] \
+       && [ "$REMOVE_BOT" = 0 ]; then
+        exec < /dev/tty
+    fi
     # чистим устаревший awg-resume от прошлых версий установщика (больше не нужен)
     if [ -f /etc/systemd/system/awg-resume.service ]; then
         systemctl disable --now awg-resume.service 2>/dev/null || true
