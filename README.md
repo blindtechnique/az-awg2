@@ -1,6 +1,6 @@
 <div align="center">
 
-# AntiZapret-AWG 2.0
+# AZ-AWG2
 
 **AntiZapret с полноценным AmneziaWG 2.0 — параллельным слоем поверх штатной установки.**
 
