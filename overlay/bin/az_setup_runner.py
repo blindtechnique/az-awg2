@@ -24,7 +24,7 @@ import sys
 
 AZ_SETUP_URL = ("https://raw.githubusercontent.com/GubernievS/"
                 "AntiZapret-VPN/main/setup.sh")
-LAYER_REPO = "https://github.com/fageoner/Antizapret-AWG-2.0.git"
+LAYER_REPO = "https://github.com/blindtechnique/az-awg2.git"
 AZ_SHA_FILE = "/opt/antizapret-awg/.az-setup-sha"
 LAYER_REV_FILE = "/opt/antizapret-awg/.layer-rev"
 LOCAL_SETUP = "/root/antizapret/setup.sh"
