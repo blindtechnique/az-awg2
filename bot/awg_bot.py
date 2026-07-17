@@ -46,7 +46,7 @@ SERVICES_ENV = os.environ.get("AWG_SERVICES_ENV", "/etc/amnezia/amneziawg/servic
 STATUS_FILE = os.environ.get("AWG_UPDATE_STATUS", "/opt/antizapret-awg/az-update-status.json")
 INSTALL_SH_URL = os.environ.get(
     "AWG_INSTALL_SH_URL",
-    "https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh")
+    "https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh")
 LOG_DIR = "/var/log"
 
 if not TOKEN or not ADMINS:
