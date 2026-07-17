@@ -33,6 +33,11 @@
 #   --bot-token X      токен бота для --install-bot без интерактива
 #   --bot-admins X     chat_id (через запятую) для --install-bot без интерактива
 #   --remove-bot       удалить только Telegram-бот (слой AmneziaWG остаётся)
+#   --uninstall        полностью удалить слой AmneziaWG (ваниль не трогается)
+#
+# Запуск БЕЗ флагов на сервере с уже установленным слоем показывает меню:
+# переустановка / новая обфускация / бот / обновление / удаление. Без
+# терминала (автоматизация) выполняется безопасное обновление (--update).
 set -euo pipefail
 
 REPO_URL="https://github.com/blindtechnique/az-awg2"
@@ -42,7 +47,7 @@ DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
 INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
-INSTALL_BOT=0; REMOVE_BOT=0
+INSTALL_BOT=0; REMOVE_BOT=0; UNINSTALL=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
 CLI_BOT_TOKEN=""; CLI_BOT_ADMINS=""
 
@@ -72,6 +77,7 @@ while [ $# -gt 0 ]; do
             if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then CLI_BOT_TOKEN="$1"; shift; fi
             if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then CLI_BOT_ADMINS="$1"; shift; fi ;;
         --remove-bot) REMOVE_BOT=1; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
         --bot-token) CLI_BOT_TOKEN="$2"; shift 2 ;;
         --bot-admins) CLI_BOT_ADMINS="$2"; shift 2 ;;
         --awg-ports) CLI_PORTS="$2"; shift 2 ;;
@@ -96,6 +102,8 @@ base_installed() {
     # (не зависим от формата вывода systemctl, который подводил на свежих серверах)
     [ -f /root/antizapret/client.sh ] || [ -f /root/antizapret/up.sh ]
 }
+
+layer_installed() { [ -f /etc/amnezia/amneziawg/services.env ]; }
 
 # зарезервировано ванилью: WG 51443/51080, «-am» редирект 52443/52080, резерв WG
 # 540/580, резерв OpenVPN 80/443/504/508, реальный OpenVPN 50080/50443, 1194, 53, 22
@@ -291,7 +299,18 @@ _deploy_bot() {  # _deploy_bot <token> <admins> — общая часть уст
 
 setup_bot() {  # вызывается из awg_layer при первичной установке (данные из STATE)
     [ "${AWG_BOT_INSTALL:-0}" = 1 ] || { log "Бот не выбран — пропуск"; return; }
-    _deploy_bot "${AWG_BOT_TOKEN}" "${AWG_BOT_ADMINS}"
+    local t="${AWG_BOT_TOKEN:-}" a="${AWG_BOT_ADMINS:-}"
+    # бот мог ставиться позже через --install-bot: тогда в STATE флаг есть,
+    # а токена нет — берём действующие значения из юнита, не ломая бота
+    if { [ -z "$t" ] || [ -z "$a" ]; } && [ -f /etc/systemd/system/awg-bot.service ]; then
+        [ -z "$t" ] && t="$(grep -oP 'AWG_BOT_TOKEN=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
+        [ -z "$a" ] && a="$(grep -oP 'AWG_BOT_ADMINS=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
+    fi
+    if [ -z "$t" ] || [ -z "$a" ]; then
+        log "Бот: нет токена/chat_id — пропуск (доустановка: bash install.sh --install-bot)"
+        return
+    fi
+    _deploy_bot "$t" "$a"
 }
 
 # ── доустановка бота ОТДЕЛЬНО, после установки слоя (--install-bot) ───────────
@@ -405,6 +424,122 @@ migrate_layer() {
         ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}
 }
 
+# ── полное удаление слоя AmneziaWG (ваниль не трогается) ─────────────────────
+remove_layer() {
+    layer_installed || { log "Слой AmneziaWG не установлен — удалять нечего."; exit 0; }
+    local AZ_IFACE="" VPN_IFACE="" AZ_SUBNET="" VPN_SUBNET=""
+    # shellcheck disable=SC1091
+    . /etc/amnezia/amneziawg/services.env 2>/dev/null || true
+    AZ_IFACE="${AZ_IFACE:-antizapret-awg}"; VPN_IFACE="${VPN_IFACE:-vpn-awg}"
+    echo
+    log "⚠️ Полное удаление слоя AmneziaWG:"
+    log "   • интерфейсы $AZ_IFACE/$VPN_IFACE, порты, профиль обфускации;"
+    log "   • ВСЕ клиенты AWG 2.0 (ключи и конфиги в $DEST/clients);"
+    log "   • Telegram-бот, статистика, таймеры, симлинки awg-client/awg-backup;"
+    log "   • ванильный AntiZapret (WireGuard/OpenVPN) продолжит работать как раньше."
+    if [ -x "$DEST/awg-backup.sh" ] && ask_yn "Сделать бэкап слоя перед удалением? [Y/n]: " y; then
+        "$DEST/awg-backup.sh" || log "бэкап не удался — продолжаю"
+    fi
+    ask_yn "Точно удалить слой ПОЛНОСТЬЮ? [y/N]: " n || { log "Отменено"; exit 0; }
+
+    log "Останавливаю сервисы…"
+    systemctl disable --now awg-bot awg-stats.timer awg-expire.timer \
+        awg-reintegrate.service 2>/dev/null || true
+    systemctl stop awg-stats.service awg-expire.service 2>/dev/null || true
+    for i in "$AZ_IFACE" "$VPN_IFACE"; do
+        systemctl disable --now "awg-quick@$i" 2>/dev/null || true
+        ip link del "$i" 2>/dev/null || true
+    done
+
+    log "Убираю юниты, дроп-ины и симлинки…"
+    rm -f /etc/systemd/system/awg-bot.service \
+          /etc/systemd/system/awg-stats.service /etc/systemd/system/awg-stats.timer \
+          /etc/systemd/system/awg-expire.service /etc/systemd/system/awg-expire.timer \
+          /etc/systemd/system/awg-reintegrate.service
+    rm -rf /etc/systemd/system/awg-quick@.service.d
+    rm -f /etc/systemd/system/antizapret.service.d/awg-reintegrate.conf
+    rmdir /etc/systemd/system/antizapret.service.d 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    rm -f /usr/local/bin/awg-obfuscation /usr/local/bin/awg-client /usr/local/bin/awg-backup
+
+    # DNS-view наших подсетей из kresd.conf (строки вида view:addr('X.Y.Z.1/24'…)
+    local s gw
+    for s in "$AZ_SUBNET" "$VPN_SUBNET"; do
+        [ -n "$s" ] || continue
+        gw="$s.1"
+        sed -i "\#view:addr('${gw}/#d" /etc/knot-resolver/kresd.conf 2>/dev/null || true
+    done
+    systemctl restart kresd@1 2>/dev/null || true
+
+    rm -rf /etc/amnezia/amneziawg "$DEST"
+    systemctl restart antizapret 2>/dev/null || true
+    echo
+    log "✅ Слой AmneziaWG удалён. Ваниль работает штатно."
+    log "   Пакеты amneziawg-tools и модуль ядра оставлены (не мешают);"
+    log "   убрать вручную: apt remove amneziawg amneziawg-tools"
+    log "   Поставить слой заново: bash install.sh"
+}
+
+# ── меню при повторном запуске без флагов на сервере с установленным слоем ───
+menu_existing() {
+    if [ ! -t 0 ]; then
+        # автоматизация/pipe: молча ничего не ломаем — только безопасное обновление
+        log "Слой AmneziaWG уже установлен, терминала нет — выполняю обновление кода"
+        log "(обфускация, порты и клиенты не трогаются). Другие действия:"
+        log "--reconfigure · --install-bot · --remove-bot · --uninstall"
+        update_layer
+        exit 0
+    fi
+    echo
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Слой AmneziaWG 2.0 уже установлен. Что сделать?"
+    echo "   1) Переустановить заново (переспросить ВСЕ параметры;"
+    echo "      новая обфускация → конфиги клиентов раздать заново)"
+    echo "   2) Обновить обфускацию (новый профиль, настройки прежние;"
+    echo "      конфиги клиентов раздать заново)"
+    echo "   3) Telegram-бот: установить / обновить токен / удалить"
+    echo "   4) Обновить слой — код и бот, обфускация/порты/клиенты"
+    echo "      НЕ трогаются, ничего не ломается  [по умолчанию]"
+    echo "   5) Удалить слой полностью (ваниль останется работать)"
+    echo "   0) Выход"
+    local m b
+    read -rp "Выбор [4]: " m
+    case "${m:-4}" in
+        1)
+            log "⚠️ Будет сгенерирован НОВЫЙ профиль обфускации: все розданные"
+            log "   клиентам конфиги перестанут работать — их придётся раздать заново."
+            ask_yn "Продолжить? [y/N]: " n || { log "Отменено"; exit 0; }
+            RECONFIGURE=1
+            collect_choices
+            awg_layer
+            ;;
+        2)
+            log "⚠️ Новый профиль обфускации с текущими настройками (пресет/шаблон/бот"
+            log "   сохраняются). Розданные клиентам конфиги придётся раздать заново."
+            ask_yn "Продолжить? [y/N]: " n || { log "Отменено"; exit 0; }
+            collect_choices   # STATE есть → ответы берутся сохранённые, без вопросов
+            awg_layer
+            ;;
+        3)
+            if [ -f /etc/systemd/system/awg-bot.service ]; then
+                echo "   1) Обновить токен/админов   2) Удалить бота   0) Назад"
+                read -rp "Выбор [1]: " b
+                case "${b:-1}" in
+                    2) remove_bot_only ;;
+                    0) log "Выход" ;;
+                    *) install_bot_only ;;
+                esac
+            else
+                install_bot_only
+            fi
+            ;;
+        5) remove_layer ;;
+        0) log "Выход" ;;
+        *) update_layer ;;
+    esac
+    exit 0
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 main() {
     # При установке через bash <(curl…) stdin занят потоком скрипта, и read
@@ -423,6 +558,11 @@ main() {
     fi
     if [ "$REMOVE_BOT" = 1 ]; then
         remove_bot_only
+        exit 0
+    fi
+    if [ "$UNINSTALL" = 1 ]; then
+        [ -r /dev/tty ] && exec < /dev/tty
+        remove_layer
         exit 0
     fi
     if [ "$INSTALL_BOT" = 1 ]; then
@@ -454,7 +594,15 @@ main() {
         log "    bash install.sh                     # поставит слой AmneziaWG"
         exit 1
     fi
-    log "AntiZapret обнаружен — ставлю слой AmneziaWG 2.0 параллельно (без перезагрузки)"
+    log "AntiZapret обнаружен"
+    # слой уже стоит, а явных флагов нет → меню вместо молчаливой переустановки
+    # (раньше повторный запуск без флагов молча генерил новую обфускацию и ломал
+    # все розданные клиентам конфиги). --reconfigure/--preset — осознанный выбор,
+    # они идут по старому пути без меню.
+    if layer_installed && [ "$RECONFIGURE" = 0 ] && [ -z "$CLI_PRESET" ]; then
+        menu_existing   # выполняет выбранное действие и завершает скрипт
+    fi
+    log "Ставлю слой AmneziaWG 2.0 параллельно ванили (без перезагрузки)"
     collect_choices
     awg_layer
 }
