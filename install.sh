@@ -10,10 +10,10 @@
 #
 # Использование:
 #   1) если AntiZapret ещё НЕ установлен — сначала поставь базу (она перезагрузит сервер):
-#        bash <(curl -fsSL https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh) --install-base
+#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --install-base
 #      …сервер перезагрузится…
 #   2) затем поставь слой AmneziaWG:
-#        bash <(curl -fsSL https://raw.githubusercontent.com/fageoner/Antizapret-AWG-2.0/main/install.sh)
+#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh)
 #
 # Флаги слоя AmneziaWG:
 #   --awg-ports A,V    зафиксировать порты вручную (antizapret,vpn),
@@ -35,7 +35,7 @@
 #   --remove-bot       удалить только Telegram-бот (слой AmneziaWG остаётся)
 set -euo pipefail
 
-REPO_URL="https://github.com/fageoner/Antizapret-AWG-2.0"
+REPO_URL="https://github.com/blindtechnique/az-awg2"
 REPO_BRANCH="${AWG_REPO_BRANCH:-main}"
 UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
 DEST="/opt/antizapret-awg"
