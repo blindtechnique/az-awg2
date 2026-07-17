@@ -173,7 +173,7 @@ deploy_overlay() {
     # зафиксировать текущую ревизию слоя (HEAD форка) — для проверки обновлений.
     # берём из git-репозитория, откуда запущена установка, или через ls-remote.
     ( rev="$(git -C "$OVERLAY/.." rev-parse --short=12 HEAD 2>/dev/null)"
-      [ -z "$rev" ] && rev="$(git ls-remote https://github.com/fageoner/Antizapret-AWG-2.0.git refs/heads/main 2>/dev/null | cut -c1-12)"
+      [ -z "$rev" ] && rev="$(git ls-remote https://github.com/blindtechnique/az-awg2.git refs/heads/main 2>/dev/null | cut -c1-12)"
       [ -n "$rev" ] && echo "$rev" > "$DEST/.layer-rev" ) 2>/dev/null || true
     systemctl enable awg-reintegrate.service 2>/dev/null || true
 }
