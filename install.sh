@@ -68,6 +68,12 @@ if [ ! -f "$SELF_DIR/patches/antizapret-awg-integration.sh" ]; then
     command -v git >/dev/null 2>&1 || { apt-get update -y && apt-get install -y git; }
     BOOT_DIR="$(mktemp -d)"
     git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$BOOT_DIR/repo"
+    # Защита от CRLF: если файлы попали в репозиторий с Windows-машины, каждая
+    # строка кончается на \r, и bash падает уже на первой — «: invalid option
+    # nameset: pipefail». Чистим то, что будем исполнять и раскладывать.
+    find "$BOOT_DIR/repo" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.service' \
+        -o -name '*.timer' -o -name '*.conf' -o -name '*.template' \) \
+        -exec sed -i 's/\r$//' {} + 2>/dev/null || true
     exec env AWG_NO_BOOTSTRAP=1 bash "$BOOT_DIR/repo/install.sh" "$@"
 fi
 REPO_DIR="$SELF_DIR"
