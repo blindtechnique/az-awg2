@@ -416,9 +416,20 @@ switch_services3() {
         systemctl stop "awg3@$i" 2>/dev/null || true
         ip link del "$i" 2>/dev/null || true
     done
-    systemctl start "awg3@${AZ3_IFACE}" "awg3@${VPN3_IFACE}" || \
-        err "слой 3.0 не стартовал — journalctl -u awg3@${AZ3_IFACE}"
-    log "Слой 3.0 поднят: $AZ3_IFACE (порт $AZ3_PORT), $VPN3_IFACE (порт $VPN3_PORT)"
+    local failed=0
+    for i in "$AZ3_IFACE" "$VPN3_IFACE"; do
+        systemctl start "awg3@$i" 2>/dev/null && continue
+        failed=1
+        err "слой 3.0: awg3@$i не стартовал. Последние строки журнала:"
+        journalctl -u "awg3@$i" -n 12 --no-pager 2>/dev/null | sed 's/^/    /' >&2
+    done
+    # Раньше здесь при любом исходе печаталось «Слой 3.0 поднят» — прямо после
+    # сообщения об ошибке. Теперь итог соответствует тому, что произошло.
+    if [ "$failed" = 0 ]; then
+        log "Слой 3.0 поднят: $AZ3_IFACE (порт $AZ3_PORT), $VPN3_IFACE (порт $VPN3_PORT)"
+    else
+        err "слой 3.0 не поднялся; слой 2.0 и ваниль не затронуты. Диагностика: awg-doctor"
+    fi
 }
 
 # внешний хост (домен/IP) для Endpoint клиентов
@@ -678,6 +689,10 @@ main() {
         gen_obfuscation3
         switch_services3
     fi
+
+    # DNS-view для подсетей обоих слоёв. Здесь, а не только в switch_services:
+    # при установке одного лишь слоя 3.0 тот вообще не вызывается.
+    "$DEST/awg-knot-view.sh" 2>/dev/null || true
 
     # синхронизируем существующих клиентов с текущим профилем обфускации
     # (у сервера и клиентов S/H/I обязаны совпадать, иначе не будет handshake)

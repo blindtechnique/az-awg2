@@ -109,8 +109,22 @@ cmd_configure() {
     "$UAPI" wait "$IFACE" 20
 
     # 1) базовый конфиг (всё, что понимает amneziawg-tools)
-    #    awg-quick strip убирает Address/MTU/DNS/PostUp/… и оставляет то, что ждёт setconf
-    awg setconf "$IFACE" <(awg-quick strip "$IFACE")
+    #    awg-quick strip убирает Address/MTU/DNS/PostUp/… и оставляет то, что ждёт setconf.
+    #    Дополнительно выкидываем незаменённые плейсхолдеры обфускации: setconf
+    #    падает на любой нераспознанной строке, а systemd в этом случае показывает
+    #    только «control process exited with error code» — искать причину долго.
+    local stripped; stripped="$(mktemp)"
+    awg-quick strip "$IFACE" | grep -vE '^__AWG3?_OBFUSCATION__$' > "$stripped"
+    if grep -q '__AWG' "$stripped"; then
+        err "в $CONF остался плейсхолдер обфускации — запусти awg-obfuscation --v3 --regenerate"
+    fi
+    if ! awg setconf "$IFACE" "$stripped"; then
+        err "awg setconf не принял $CONF — строка ниже:"
+        awg setconf "$IFACE" "$stripped" 2>&1 | head -3 >&2
+        rm -f "$stripped"
+        return 1
+    fi
+    rm -f "$stripped"
 
     # 2) параметры AmneziaWG 3.0 — только через UAPI
     if [ -s "$V3" ]; then

@@ -414,6 +414,62 @@ SVC_TITLE = {
 SVC_TAG = {"antizapret": "🌐", "vpn": "🔒", "antizapret3": "🌐³", "vpn3": "🔒³"}
 
 
+def render_doctor(out: str, err: str = "") -> str:
+    """awg-doctor --json → аккуратный экран в стиле остальных.
+
+    Сырой вывод скрипта в чат не годится: там ANSI-раскраска, которая в Telegram
+    превращается в мусор вида «[1;32m», и никакой структуры. Поэтому берём JSON
+    и рисуем сами — разделы жирным, статусы кружками, итог отдельной строкой.
+    """
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        # скрипт не смог даже стартовать (слой не установлен и т.п.)
+        msg = (err or out or "").strip() or "не удалось получить результат"
+        return f"🩺 <b>Диагностика</b>\n\n{html.escape(msg[:1500])}"
+
+    icon = {"OK": "🟢", "FAIL": "🔴", "WARN": "🟡"}
+    lines, first = [], True
+    for ch in data.get("checks", []):
+        st, text = ch.get("status", ""), html.escape(ch.get("text", ""))
+        if st == "SECTION":
+            lines.append(("" if first else "\n") + f"<b>{text}</b>")
+            first = False
+        else:
+            lines.append(f"{icon.get(st, '•')} {text}")
+
+    problems = data.get("problems", 0)
+    total = sum(1 for ch in data.get("checks", []) if ch.get("status") != "SECTION")
+    warns = sum(1 for ch in data.get("checks", []) if ch.get("status") == "WARN")
+    if problems:
+        tail = f"🔴 <b>Проблем: {problems}</b> из {total} проверок"
+    elif warns:
+        tail = f"🟡 <b>Всё работает</b>, замечаний: {warns}"
+    else:
+        tail = f"🟢 <b>Всё в порядке</b> — {total} проверок пройдено"
+    return "🩺 <b>Диагностика</b>\n\n" + "\n".join(lines) + "\n\n" + tail
+
+
+def render_selftest(out: str) -> str:
+    """awg-selftest → тот же стиль: файл строкой, замечания под ним."""
+    body = []
+    for ln in (out or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("✓"):
+            body.append("🟢 " + html.escape(s[1:].strip()))
+        elif s.startswith("✗"):
+            body.append("🔴 " + html.escape(s[1:].strip()))
+        elif s.startswith(("конфигов с проблемами", "проверено")):
+            body.append("\n<b>" + html.escape(s) + "</b>")
+        else:
+            body.append("   <i>" + html.escape(s) + "</i>")
+    if not body:
+        body = ["клиентских конфигов не найдено"]
+    return "📄 <b>Проверка выдаваемых конфигов</b>\n\n" + "\n".join(body)[:3500]
+
+
 def clients_menu() -> InlineKeyboardMarkup:
     # показываем только те типы клиентов, что реально доступны на сервере
     # (пользователь мог поставить AntiZapret без OpenVPN и/или без WireGuard)
@@ -1066,21 +1122,21 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
             await show(c, "🩺 Проверяю выдаваемые конфиги…", kb([back()]))
             rc, out, err = run([PY, "/opt/antizapret-awg/awg-selftest.py", "--all"],
                                timeout=120)
+            body = render_selftest(out or err)
         else:
             await show(c, "🩺 Проверяю связность…" +
                        ("\n<i>глубокая проверка поднимает клиента в namespace, "
                         "это до минуты</i>" if deep else ""), kb([back()]))
-            rc, out, err = run(["/usr/local/bin/awg-doctor"] + (["--deep"] if deep else []),
-                               timeout=240)
-        body = (out or err or "(пусто)")[-3300:]
+            rc, out, err = run(["/usr/local/bin/awg-doctor", "--json"]
+                               + (["--deep"] if deep else []), timeout=240)
+            body = render_doctor(out, err)
         rows = [[("🔄 Ещё раз", d)]]
         if d != "doctor:deep":
             rows.append([("🔬 Глубокая проверка", "doctor:deep")])
         if d != "doctor:selftest":
             rows.append([("📄 Проверить конфиги клиентов", "doctor:selftest")])
         rows.append(back())
-        head = "🩺 <b>Диагностика</b>" + ("" if rc == 0 else " — есть замечания")
-        return await show(c, f"{head}\n<pre>{html.escape(body)}</pre>", kb(rows), stamp=True)
+        return await show(c, body, kb(rows), stamp=True)
 
     if d == "obf:menu":
         # у слоёв 2.0 и 3.0 отдельные профили (obfuscation.env / obfuscation3.env):

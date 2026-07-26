@@ -218,7 +218,7 @@ apply_to_server() {
     # вставляем свежий блок в конец [Interface], затем дописываем peers.
     local iface peers
     iface="$(awk '/^\[Peer\]/{exit} {print}' "$conf" \
-        | grep -vE '^__AWG_OBFUSCATION__$|^(Jc|Jmin|Jmax|S1|S2|S3|S4|H1|H2|H3|H4|I1|I2|I3|I4|I5) *=' || true)"
+        | grep -vE '^__AWG3?_OBFUSCATION__$|^(Jc|Jmin|Jmax|S1|S2|S3|S4|H1|H2|H3|H4|I1|I2|I3|I4|I5) *=' || true)"
     peers="$(awk '/^\[Peer\]/{p=1} p' "$conf" \
         | grep -vE '^(Jc|Jmin|Jmax|S1|S2|S3|S4|H1|H2|H3|H4|I1|I2|I3|I4|I5) *=' || true)"
     {

@@ -110,7 +110,13 @@ if [ -f /etc/knot-resolver/kresd.conf ]; then
     miss=0
     for s in "${AZ_SUBNET:-}" "${VPN_SUBNET:-}" "${AZ3_SUBNET:-}" "${VPN3_SUBNET:-}"; do
         [ -n "$s" ] || continue
-        grep -q "view:addr('$s.1/24'" /etc/knot-resolver/kresd.conf || miss=$((miss+1))
+        grep -q "view:addr('$s.1/24'" /etc/knot-resolver/kresd.conf && continue
+        # Свой view нужен только там, где ваниль сама их держит: она описывает
+        # view для split-подсетей, а для полного VPN их может не быть вовсе —
+        # тогда и нам добавлять некуда, и это не проблема.
+        if grep -q "view:addr('${s%.*}\." /etc/knot-resolver/kresd.conf; then
+            miss=$((miss+1))
+        fi
     done
     [ "$miss" = 0 ] && ok "view для подсетей слоя на месте" \
                     || warn "в kresd.conf не хватает view для $miss подсетей (awg-knot-view.sh)"
