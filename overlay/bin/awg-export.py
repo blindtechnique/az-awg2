@@ -119,18 +119,36 @@ def build_amnezia_json(conf: dict, name: str) -> dict:
         if i in awg:
             last_config[i] = awg[i]
 
+    # Версия протокола для приложения Amnezia VPN.
+    #
+    # Без этого поля приложение показывает конфиг как «AmneziaWG Legacy»:
+    # при импорте vpn:// оно не вычисляет версию само, а читает готовое
+    # protocol_version из контейнера (configKey::protocolVersion), и пустое
+    # значение трактует как легаси. Отдельно от отображения поле влияет на то,
+    # подставит ли клиент дефолты для S3/S4, если те не заданы.
+    #
+    # Считаем ровно по логике самого клиента (ImportController::
+    # extractWireGuardConfig): есть S3 и S4 → «2», иначе только I-пакеты → «1.5».
+    has_s34 = bool(last_config.get("S3")) and bool(last_config.get("S4"))
+    has_ijunk = any(last_config.get(i) for i in ("I1", "I2", "I3", "I4", "I5"))
+    protocol_version = "2" if has_s34 else ("1.5" if has_ijunk else "")
+
+    awg_container = {
+        "H1": last_config["H1"], "H2": last_config["H2"],
+        "H3": last_config["H3"], "H4": last_config["H4"],
+        "Jc": last_config["Jc"], "Jmin": last_config["Jmin"],
+        "Jmax": last_config["Jmax"],
+        "S1": last_config["S1"], "S2": last_config["S2"],
+        "last_config": json.dumps(last_config, ensure_ascii=False),
+        "mtu": str(mtu), "port": port, "transport_proto": "udp",
+    }
+    if protocol_version:
+        awg_container["protocol_version"] = protocol_version
+
     return {
         "containers": [{
             "container": "amnezia-awg",
-            "awg": {
-                "H1": last_config["H1"], "H2": last_config["H2"],
-                "H3": last_config["H3"], "H4": last_config["H4"],
-                "Jc": last_config["Jc"], "Jmin": last_config["Jmin"],
-                "Jmax": last_config["Jmax"],
-                "S1": last_config["S1"], "S2": last_config["S2"],
-                "last_config": json.dumps(last_config, ensure_ascii=False),
-                "mtu": str(mtu), "port": port, "transport_proto": "udp",
-            },
+            "awg": awg_container,
         }],
         "defaultContainer": "amnezia-awg",
         "description": name,
