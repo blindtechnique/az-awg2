@@ -1,11 +1,13 @@
 <div align="center">
 
-# AZ-AWG2
+# AZ-AWG2 · ветка `beta`
 
-**AntiZapret с полноценным AmneziaWG 2.0 — параллельным слоем поверх штатной установки.**
+**AntiZapret с полноценным AmneziaWG — параллельным слоем поверх штатной установки.
+В этой ветке к слою 2.0 добавлен независимый слой AmneziaWG 3.0.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0-2ea44f)](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
+[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0%20%C2%B7%203.0-2ea44f)](https://github.com/amnezia-vpn/amneziawg-go)
+[![branch](https://img.shields.io/badge/branch-beta-orange)](https://github.com/blindtechnique/az-awg2/tree/beta)
 [![OS](https://img.shields.io/badge/Ubuntu%2024.04%2B%20%C2%B7%20Debian%2012%2B-e95420?logo=ubuntu&logoColor=white)](#требования)
 [![Bash](https://img.shields.io/badge/bash-4EAA25?logo=gnubash&logoColor=white)](#)
 [![Telegram bot](https://img.shields.io/badge/Telegram-бот-26A5E4?logo=telegram&logoColor=white)](#telegram-бот)
@@ -15,6 +17,15 @@
 
 </div>
 
+> [!WARNING]
+> **Это ветка `beta`.** Стабильная версия — [`main`](https://github.com/blindtechnique/az-awg2).
+> Здесь обкатывается слой **AmneziaWG 3.0** (userspace-датапас `amneziawg-go`), диагностика
+> `awg-doctor`, самотест конфигов и шифрование бэкапа. Ставь на боевой сервер, только
+> если готов к тому, что что-то придётся чинить руками.
+>
+> Ветки живут **параллельно**: у каждой свой `install.sh` и своя команда установки,
+> обновления не перескакивают между ветками. Как вернуться на `main` — [ниже](#ветки-main-и-beta).
+
 ---
 
 ## Зачем это
@@ -23,9 +34,24 @@
 
 Форк добавляет **полноценный AmneziaWG 2.0** с собственным транспортом — рандомизированные заголовки, обфускация транспортных пакетов, мимикрия под QUIC/TLS/DNS. Ключевое отличие от прежних версий: слой работает **параллельно** штатному AntiZapret, а не вместо него. Оригинальные WireGuard-интерфейсы, порты, `client.sh`, DNS и правила маршрутизации не изменяются ни на байт — слой поднимает свои интерфейсы на отдельных подсетях и отдельном UDP-порту. Отсюда два практических следствия: обновление AntiZapret не ломает слой, а сторонние админ-панели (например [AdminPanelAZ](https://github.com/Kirito0098/AdminPanelAZ)) продолжают работать без патчей.
 
+## Что нового в ветке beta
+
+- **Слой AmneziaWG 3.0** рядом со слоем 2.0 — свои интерфейсы `antizapret-awg3` / `vpn-awg3`, свои подсети (третий октет +2), свой порт и свой профиль обфускации. При установке спрашивается, что поднять: 2.0, 3.0 или оба сразу; то же самое доступно в боте при создании клиента.
+- **Header protection, content padding, рандомизация таймингов** — то, чего нет в 2.0. Ключ header protection шифрует низкоэнтропийные заголовки WireGuard, паддинг ломает сигнатуру размеров, тайминги убирают регулярность rekey/keepalive.
+- **`awg-doctor`** — проверка связности по слоям: юниты, порты, интерфейсы, профили, а с `--deep` ещё и настоящий handshake в сетевом namespace. Есть `--json`.
+- **`awg-selftest.py`** — прогоняет сгенерированный `vpn://` через те же проверки, что делает приложение Amnezia при импорте (split tunneling, версия протокола, ключи).
+- **`awg-upstream-check.sh`** — сообщает, вышли ли новые версии `amneziawg-go` / tools / слоя. Ничего не обновляет сам.
+- **Бэкап с шифрованием** — `awg-backup backup --encrypt` (AES-256, PBKDF2). В архиве приватные ключи сервера и всех клиентов, а бот умеет присылать его в чат — то есть копия навсегда оседает в переписке.
+- **Токен бота вынесен из юнита** в `/opt/antizapret-awg/bot.env` с правами `600`: юниты в `/etc/systemd/system` читаются всеми. Существующие установки мигрируются при `--update` автоматически.
+
+### Почему 3.0 — отдельный слой, а не замена
+
+Kernel-модуль `amneziawg` знает параметры только до 2.0, а `awg-quick` молча падает в него, если модуль загружен. Поэтому 3.0 поднимается userspace-демоном `amneziawg-go` из юнита `awg3@` — иначе вместо 3.0 незаметно поднялся бы 2.0. И `amneziawg-tools` не умеет писать v3-параметры, поэтому они применяются напрямую через UAPI-сокет демона. Слои независимы: клиентам со свежими приложениями выдаёшь 3.0, всем остальным — 2.0, и ничего не ломается.
+
 ## Что внутри
 
 - **AmneziaWG 2.0** — kernel-модуль через официальный PPA (Ubuntu) или ручной репозиторий (Debian), обфускация в `[Interface]`.
+- **AmneziaWG 3.0** — userspace `amneziawg-go`, собирается из исходников при установке; параметры 3.0 применяются через UAPI.
 - **Параллельная работа** — штатные WireGuard и OpenVPN остаются активными; слой не конфликтует с ними и с админ-панелями.
 - **Раздельная маршрутизация (AntiZapret)** — в туннель уходит только заблокированное, остальное идёт напрямую. Работает и на AmneziaWG-слое, и на штатных WireGuard/OpenVPN.
 - **Полный VPN** — отдельный профиль, весь трафик через сервер.
@@ -74,21 +100,28 @@ flowchart LR
 bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/GubernievS/AntiZapret-VPN/main/setup.sh)
 ```
 
-> Если официальный установщик у тебя падает из-за просроченного GPG-ключа OpenVPN, поставь базу через наш скрипт — он этот случай обходит: `bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --install-base`
+> Если официальный установщик у тебя падает из-за просроченного GPG-ключа OpenVPN, поставь базу через наш скрипт — он этот случай обходит: `bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --install-base`
 
-**Шаг 2. Слой AmneziaWG 2.0** (после перезагрузки, без ребута):
+**Шаг 2. Слой AmneziaWG** (после перезагрузки, без ребута):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh)
 ```
 
-Выбираешь обфускацию, мимикрию, MTU, домен, порт (по умолчанию рандомный) и при желании ставишь бота. Готово.
+Первым вопросом установщик спрашивает версию протокола — **2.0**, **3.0** или **обе сразу** (по умолчанию обе). Дальше выбираешь обфускацию, мимикрию, MTU, домен, порт (по умолчанию рандомный) и при желании ставишь бота. Готово.
+
+Без интерактива версия задаётся флагом:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --awg both
+```
 
 ### Флаги установщика
 
 | Флаг | Что делает |
 |---|---|
 | `--install-base` | поставить базовый AntiZapret с обходом GPG-бага и перезагрузить сервер |
+| `--awg 2\|3\|both` | какие версии протокола поднять (по умолчанию спросит). Слои независимы |
 | `--preset high --template web` | обфускация без вопросов |
 | `--awg-ports A,V` | задать порты вручную (`antizapret,vpn`), иначе рандомные из свободных |
 | `--no-bot` | не спрашивать про Telegram-бота |
@@ -111,6 +144,11 @@ awg-client add  guest antizapret --ttl 6h # временный (30m / 6h / 7d �
 awg-client del  ivan antizapret
 awg-client list antizapret
 
+# AmneziaWG 3.0 (тот же скрипт, сервисы с суффиксом 3)
+awg-client add  ivan antizapret3          # 3.0, split-routing
+awg-client add  ivan vpn3                 # 3.0, полный туннель
+awg-client list vpn3
+
 # стоковые WireGuard/AmneziaWG и OpenVPN — штатный скрипт AntiZapret
 /root/antizapret/client.sh 4 ivan         # добавить стоковый WG (оба туннеля)
 /root/antizapret/client.sh 5 ivan         # удалить стоковый WG
@@ -120,15 +158,25 @@ awg-client list antizapret
 /root/antizapret/client.sh 3              # список OpenVPN
 
 # обфускация
-awg-obfuscation                           # меню с подсказками
+awg-obfuscation                           # меню с подсказками (слой 2.0)
 awg-obfuscation --show                    # текущий профиль
 awg-obfuscation --regenerate              # новые сигнатуры
+awg-obfuscation --v3 --show               # то же для слоя 3.0
+awg-obfuscation --v3 --regenerate
+
+# диагностика (beta)
+awg-doctor                                # юниты, порты, интерфейсы, профили — по слоям
+awg-doctor --deep                         # + реальный handshake в netns
+awg-doctor --json                          # для мониторинга
+/opt/antizapret-awg/awg-selftest.py --all   # или путь к конкретному клиентскому .conf
+/opt/antizapret-awg/awg-upstream-check.sh # вышли ли новые версии amneziawg-go/tools/слоя
 
 # статистика
 /opt/antizapret-awg/venv/bin/python /opt/antizapret-awg/awg_stats.py overview
 # бэкап
 awg-backup backup                         # → tar.gz
-awg-backup restore файл.tar.gz
+awg-backup backup --encrypt               # → tar.gz.enc (AES-256, спросит пароль)
+awg-backup restore файл.tar.gz            # .enc распознаётся и расшифровывается
 ```
 
 > Вызовы `client.sh` из бота сериализуются через `flock`, чтобы не конфликтовать с админ-панелью, которая пишет в те же файлы.
@@ -140,14 +188,18 @@ awg-backup restore файл.tar.gz
 ```
 🔐 AntiZapret-AWG 2.0 · vpn.example.com
 ├─ 👥 Клиенты
-│   ├─ ➕ AmneziaWG 2.0 (AntiZapret / Полный VPN)
+│   ├─ ➕ AmneziaWG 2.0 / 3.0 → версия протокола → тип туннеля
+│   │     (шаг с версией появляется, только если подняты оба слоя)
 │   ├─ ➕ Стоковый WG      (оба туннеля, отдаются -am конфиг + QR + vpn://)
 │   ├─ ➕ OpenVPN
-│   ├─ ⏳ Временный клиент
+│   ├─ ⏳ Временный клиент  (тоже с выбором слоя)
 │   └─ 📋 Список → клиент → ℹ️ Информация · 📥 Скачать · 🗑 Удалить
-│                          (🌐 AWG2 split · 🔒 AWG2 полный · 🅰️ сток · 📄 OpenVPN)
+│                          (🌐 AWG2 split · 🔒 AWG2 полный · 🌐³ 🔒³ AWG3 ·
+│                           🅰️ сток · 📄 OpenVPN)
 │      (пункты скрываются, если OpenVPN или WireGuard не установлены)
 ├─ ℹ️ Информация      CPU / RAM / диск / аптайм, онлайн, топ-5, трафик
+├─ 🩺 Диагностика     awg-doctor по слоям · 🔬 глубокая (handshake в netns) ·
+│                     📄 проверка выдаваемых клиентам конфигов
 ├─ ⚙️ Настройки AntiZapret
 │   ├─ 🩹 Патч OpenVPN (анти-цензура)         (patch-openvpn.sh, при OpenVPN)
 │   ├─ ⚡ OpenVPN DCO вкл/выкл                 (openvpn-dco.sh, при OpenVPN)
@@ -156,8 +208,8 @@ awg-backup restore файл.tar.gz
 │   ├─ 🔎 Проверить обновления              (есть ли изменения кода на GitHub)
 │   ├─ 📋 Обновить списки АнтиЗапрета      (doall.sh, безопасно)
 │   ├─ 🧬 Обновить AWG 2.0                   (код слоя, install.sh --update)
-│   └─ 🛠 Перенастроить обфускацию
-├─ 🛡 Обфускация       показать / перегенерировать
+│   └─ 🛠 Перенастроить обфускацию           (сперва спросит слой, если их два)
+├─ 🛡 Обфускация       показать / перегенерировать — отдельно для 2.0 и 3.0
 ├─ 💾 Бэкап
 └─ ♻️ Восстановить     (принимает загруженный .tar.gz)
 ```
@@ -201,13 +253,13 @@ awg-backup restore файл.tar.gz
 Обновить **код** слоя (скрипты, бот, раннер) — без смены обфускации и без пересборки клиентов:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --update
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --update
 ```
 
 Сменить **настройки** обфускации — новый профиль, конфиги переимпортировать на устройствах:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --reconfigure
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --reconfigure
 ```
 
 ### Миграция со старых версий
@@ -215,17 +267,46 @@ bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/
 Ранние версии форка умели работать в режимах `replace` (замена штатного WG) и `keep` (WG на фиксированных `52xxx`). Актуальная версия работает только в `parallel`. Перевод — одной командой:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --migrate
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --migrate
 ```
 
 Миграция возвращает штатный WireGuard в исходное состояние (порты, редиректы), переносит слой на интерфейсы `antizapret-awg`/`vpn-awg` и рандомный порт, сохраняя ключи клиентов. Клиентские конфиги при этом придётся раздать заново: у `keep` меняется порт `Endpoint`, у `replace` — ещё и туннельный IP.
 
+## Ветки `main` и `beta`
+
+Ветки полностью параллельны: свой README, свой `install.sh`, своя команда установки. Установщик из `beta` клонирует `beta`, бот из `beta` обновляется с `beta` — перескочить между ветками случайно нельзя.
+
+| | `main` | `beta` |
+|---|---|---|
+| команда установки | `.../az-awg2/main/install.sh` | `.../az-awg2/beta/install.sh` |
+| AmneziaWG | 2.0 | 2.0 и/или 3.0 |
+| статус | стабильная | обкатка |
+
+Перейти с `main` на `beta` (клиенты 2.0 и их ключи сохраняются, слой 3.0 доустанавливается рядом):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --reconfigure
+```
+
+Вернуться на `main`:
+
+```bash
+AWG_REPO_BRANCH=main bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --update
+```
+
+Слой 3.0 при этом остаётся на диске, но перестаёт обслуживаться установщиком `main`. Чтобы убрать его совсем — переустанови слой с `--awg 2`.
+
 ## Диагностика
 
 ```bash
+awg-doctor                                   # первым делом: всё по слоям одним экраном
+awg-doctor --deep                            # + настоящий handshake в netns
+
 awg show                                    # интерфейсы слоя, peers, handshake, трафик
 wg show                                      # штатные WireGuard-интерфейсы
-systemctl status awg-quick@antizapret-awg
+systemctl status awg-quick@antizapret-awg    # слой 2.0
+systemctl status awg3@antizapret-awg3        # слой 3.0 (userspace amneziawg-go)
+/opt/antizapret-awg/awg3-datapath.sh status antizapret-awg3   # + параметры 3.0 из UAPI
 ```
 
 | Симптом | Причина / решение |
@@ -239,11 +320,15 @@ systemctl status awg-quick@antizapret-awg
 | split-клиент открывает только «прямые» сайты | после полного обновления раздай ему свежий конфиг (📥 Скачать) — маршруты обновились |
 | Debian: репозиторий Amnezia «not signed» | обнови слой (`--update`) — keyring теперь `0644`, читается верификатором `_apt` |
 | установлен режим `replace`/`keep` | `--migrate` |
+| слой 3.0: интерфейса нет, юнит падает | `journalctl -u awg3@antizapret-awg3` — обычно не собрался `amneziawg-go` (нет Go/gcc) или порт занят |
+| клиент 3.0 не подключается, 2.0 работает | приложение старое: параметры 3.0 понимают только свежие сборки Amnezia. Выдай тому же человеку клиента 2.0 |
+| приложение пишет «AmneziaWG Legacy» | импортируй **`vpn://`**, а не `.conf`: при импорте `.conf` приложение отбрасывает всё, кроме базовых параметров |
 
 ## На чём основано
 
 - [GubernievS/AntiZapret-VPN](https://github.com/GubernievS/AntiZapret-VPN) — база: маршрутизация, OpenVPN, DNS, списки.
 - [amnezia-vpn/amneziawg](https://github.com/amnezia-vpn) — сам AmneziaWG 2.0.
+- [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) — userspace-датапас, на котором работает слой 3.0.
 - [Kirito0098/AdminPanelAZ](https://github.com/Kirito0098/AdminPanelAZ) — веб-панель, совместимая со слоем.
 - [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) и [Vadim-Khristenko/AmneziaWG-Architect](https://github.com/Vadim-Khristenko/AmneziaWG-Architect) — подходы к установке AWG и генерации мимикрии.
 

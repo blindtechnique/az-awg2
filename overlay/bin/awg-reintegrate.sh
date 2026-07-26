@@ -65,6 +65,20 @@ for i in "$AZ_IFACE" "$VPN_IFACE"; do
     fi
 done
 
+# 3б. слой 3.0: юниты awg3@ (userspace amneziawg-go). Тип интерфейса тут НЕ
+#     проверяем через `ip -d link | grep amneziawg` — userspace-датапас поднимает
+#     обычный TUN, и такой проверки он бы не прошёл. Смотрим на сам юнит.
+if [ "${LAYER3:-0}" = 1 ]; then
+    for i in "${AZ3_IFACE:-antizapret-awg3}" "${VPN3_IFACE:-vpn-awg3}"; do
+        systemctl enable "awg3@$i" 2>/dev/null || true
+        if ! systemctl is-active --quiet "awg3@$i" 2>/dev/null; then
+            ip link del "$i" 2>/dev/null || true
+            systemctl start "awg3@$i" 2>/dev/null && log "поднят awg3@$i (amneziawg-go)" \
+                || log "не удалось поднять awg3@$i"
+        fi
+    done
+fi
+
 # 4. DNS: view в kresd.conf для наших подсетей (обновление AntiZapret его затирает).
 #    Нужен в parallel и keep (свои подсети); в replace подсети ванильные — скрипт
 #    сам ничего не сделает.

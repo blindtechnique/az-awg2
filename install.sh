@@ -10,14 +10,16 @@
 #
 # Использование:
 #   1) если AntiZapret ещё НЕ установлен — сначала поставь базу (она перезагрузит сервер):
-#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh) --install-base
+#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh) --install-base
 #      …сервер перезагрузится…
 #   2) затем поставь слой AmneziaWG:
-#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh)
+#        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh)
 #
 # Флаги слоя AmneziaWG:
 #   --awg-ports A,V    зафиксировать порты вручную (antizapret,vpn),
 #                      по умолчанию — рандомные свободные с закреплением
+#   --awg 2|3|both     какие версии протокола ставить (по умолчанию спросит).
+#                      3.0 поднимается ОТДЕЛЬНЫМИ интерфейсами и не мешает 2.0
 #   --preset X --template Y --fp Z   обфускация без вопросов
 #   --no-bot           не спрашивать про Telegram-бота
 #   --update           обновить код/бот/самовосстановление БЕЗ смены обфускации,
@@ -41,7 +43,9 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/blindtechnique/az-awg2"
-REPO_BRANCH="${AWG_REPO_BRANCH:-main}"
+# ветка beta: слой AmneziaWG 3.0, awg-doctor, самотест, шифрование бэкапа.
+# Переключиться на стабильную: AWG_REPO_BRANCH=main bash install.sh
+REPO_BRANCH="${AWG_REPO_BRANCH:-beta}"
 UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
 DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
@@ -49,6 +53,8 @@ STATE="/opt/antizapret-awg/install-state.env"
 INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
 INSTALL_BOT=0; REMOVE_BOT=0; UNINSTALL=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
+# какие версии протокола поднимать: 2 | 3 | both
+CLI_AWG_VER=""
 CLI_BOT_TOKEN=""; CLI_BOT_ADMINS=""
 
 # ── самозагрузка (curl|bash): клонируем и re-exec, с защитой от зацикливания ──
@@ -83,6 +89,7 @@ while [ $# -gt 0 ]; do
         --awg-ports) CLI_PORTS="$2"; shift 2 ;;
         --no-bot) NO_BOT=1; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
+        --awg) CLI_AWG_VER="$2"; shift 2 ;;
         --preset) CLI_PRESET="$2"; shift 2 ;;
         --template) CLI_TEMPLATE="$2"; shift 2 ;;
         --fp) CLI_FP="$2"; shift 2 ;;
@@ -161,13 +168,74 @@ install_base() {
 # ════════════════════════════════════════════════════════════════════════════
 # надёжный y/n: читает с терминала (важно при bash <(curl…), где stdin — не tty),
 # срезает пробелы/CR, нормализует регистр. Принимает y/yes/д/да.
+# /dev/tty может существовать, но не открываться (нет управляющего терминала —
+# например при `ssh host 'bash -s' < script`). Проверяем именно ОТКРЫТИЕ.
+has_tty() { (exec </dev/tty) 2>/dev/null; }
+
+# Строгий да/нет: принимаем только явный ответ, всё остальное переспрашиваем.
+# Раньше любой мусор молча означал «нет», и установка тихо уходила не по той
+# ветке — например без бота.
 ask_yn() {  # ask_yn "<вопрос>" <default: y|n> → 0 если да
-    local q="$1" def="${2:-n}" a src=/dev/stdin
-    [ -r /dev/tty ] && src=/dev/tty
-    read -rp "$q" a < "$src" || true
-    a="$(printf '%s' "$a" | tr -d '[:space:]\r' | tr '[:upper:]' '[:lower:]')"
-    [ -z "$a" ] && a="$def"
-    case "$a" in y|yes|д|да) return 0 ;; *) return 1 ;; esac
+    local q="$1" def="${2:-n}" a src=/dev/stdin tries=0
+    has_tty && src=/dev/tty
+    while :; do
+        a=""
+        read -rp "$q" a < "$src" || a="$def"
+        # tr понижает регистр только латиницы — кириллицу доводим sed'ом,
+        # иначе «НЕТ» заглавными не распознаётся
+        a="$(printf '%s' "$a" | tr -d '[:space:]\r' | tr 'A-Z' 'a-z' \
+             | sed 's/Д/д/g; s/А/а/g; s/Н/н/g; s/Е/е/g; s/Т/т/g')"
+        [ -z "$a" ] && a="$def"
+        case "$a" in
+            y|yes|д|да)  return 0 ;;
+            n|no|н|нет)  return 1 ;;
+        esac
+        tries=$((tries + 1))
+        if [ "$tries" -ge 5 ]; then
+            log "внятного ответа нет — беру значение по умолчанию: $def"
+            case "$def" in y|yes|д|да) return 0 ;; *) return 1 ;; esac
+        fi
+        printf '    Ответьте y (да) или n (нет). Enter — вариант по умолчанию.\n' >&2
+    done
+}
+
+# Выбор пункта меню: принимаем только перечисленные варианты.
+ask_pick() {  # ask_pick <имя_переменной> <дефолт> "<допустимые через пробел>"
+    local __var="$1" def="$2" allowed="$3" v src=/dev/stdin tries=0
+    has_tty && src=/dev/tty
+    while :; do
+        v=""
+        read -rp "Выбор [$def]: " v < "$src" || v="$def"
+        v="$(printf '%s' "$v" | tr -d '[:space:]\r')"
+        [ -z "$v" ] && v="$def"
+        if printf '%s\n' $allowed | grep -qx "$v"; then
+            printf -v "$__var" '%s' "$v"; return 0
+        fi
+        tries=$((tries + 1))
+        if [ "$tries" -ge 5 ]; then
+            log "внятного выбора нет — беру вариант по умолчанию: $def"
+            printf -v "$__var" '%s' "$def"; return 0
+        fi
+        printf '    Допустимые варианты: %s. Enter — %s.\n' "$allowed" "$def" >&2
+    done
+}
+
+# Ввод с проверкой по регулярке: не пускаем дальше, пока не введено корректное.
+ask_valid() {  # ask_valid <имя_переменной> "<подсказка>" <регулярка> "<пояснение>" [дефолт]
+    local __var="$1" q="$2" re="$3" hint="$4" def="${5:-}" v src=/dev/stdin tries=0
+    has_tty && src=/dev/tty
+    while :; do
+        v=""
+        read -rp "$q" v < "$src" || v="$def"
+        v="$(printf '%s' "$v" | tr -d '[:space:]\r')"
+        [ -z "$v" ] && v="$def"
+        if [ -n "$v" ] && [[ "$v" =~ $re ]]; then
+            printf -v "$__var" '%s' "$v"; return 0
+        fi
+        tries=$((tries + 1))
+        [ "$tries" -ge 5 ] && { log "корректное значение не введено"; return 1; }
+        printf '    %s\n' "$hint" >&2
+    done
 }
 
 parse_cli_ports() {  # "1234,5678" → AZ_PORT_CHOICE/VPN_PORT_CHOICE
@@ -208,6 +276,29 @@ collect_choices() {
         return
     fi
     local PRESET="medium" TEMPLATE="" FP="chrome" MTU=1320 HOST="" BOT_INSTALL=0 BOT_TOKEN="" BOT_ADMINS=""
+    local AWG_VER="${CLI_AWG_VER:-}"
+
+    # ── версия протокола ────────────────────────────────────────────────────
+    # 2.0 работает на kernel-модуле, 3.0 — только userspace (в модуле нет
+    # header protection и остального из 3.0). Слои независимы: разные
+    # интерфейсы, подсети и порты, поэтому «оба сразу» — рабочий вариант:
+    # клиентам со свежими приложениями выдаёшь 3.0, остальным 2.0.
+    if [ -z "$AWG_VER" ]; then
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  Какую версию AmneziaWG поднять?"
+        echo
+        echo "   1) 2.0        — как раньше: kernel-модуль, работает с любыми"
+        echo "                   клиентами AmneziaWG, включая старые."
+        echo "   2) 3.0        — header protection, content padding, рандомные"
+        echo "                   тайминги. Датапас userspace (amneziawg-go),"
+        echo "                   собирается из исходников. Нужны свежие клиенты."
+        echo "   3) обе сразу  — два независимых слоя [по умолчанию]."
+        echo "                   Клиент заводится в нужный одной командой."
+        ask_pick VER_CHOICE 3 "1 2 3"
+        case "$VER_CHOICE" in 1) AWG_VER=2 ;; 2) AWG_VER=3 ;; *) AWG_VER=both ;; esac
+    fi
+    case "$AWG_VER" in 2|3|both) ;; *) log "неизвестное значение --awg '$AWG_VER', беру both"; AWG_VER=both ;; esac
+
     if [ -n "$CLI_PRESET" ]; then
         PRESET="$CLI_PRESET"; TEMPLATE="$CLI_TEMPLATE"; FP="${CLI_FP:-chrome}"
     else
@@ -248,11 +339,16 @@ collect_choices() {
     if [ "$NO_BOT" = 0 ]; then
         echo
         if ask_yn "Установить Telegram-бот (клиенты OpenVPN+AmneziaWG, статистика, бэкап)? [y/N]: " n; then
-            read -rp "  Токен бота (@BotFather): " BOT_TOKEN
-            read -rp "  Твой chat_id: " BOT_ADMINS
-            BOT_TOKEN="$(printf '%s' "$BOT_TOKEN" | tr -d '[:space:]\r')"
-            BOT_ADMINS="$(printf '%s' "$BOT_ADMINS" | tr -d '[:space:]\r')"
-            [ -n "$BOT_TOKEN" ] && [ -n "$BOT_ADMINS" ] && BOT_INSTALL=1 || log "Токен/admin пустые — бот пропущен"
+            # проверяем формат: опечатка оборачивается ботом, который молча
+            # не отвечает, и причину приходится искать в журнале
+            if ask_valid BOT_TOKEN "  Токен бота (@BotFather): " '^[0-9]+:[A-Za-z0-9_-]+$' \
+                   "Формат: 123456789:AA...  (цифры, двоеточие, ключ)" \
+               && ask_valid BOT_ADMINS "  Твой chat_id (число, у @userinfobot): " '^[0-9]+(,[0-9]+)*$' \
+                   "Только число или числа через запятую, не @username."; then
+                BOT_INSTALL=1
+            else
+                log "Токен/chat_id не введены — бот пропущен"
+            fi
         fi
     fi
     mkdir -p "$(dirname "$STATE")"; umask 077
@@ -265,6 +361,7 @@ AWG_BOT_TOKEN='$BOT_TOKEN'
 AWG_BOT_ADMINS='$BOT_ADMINS'
 AWG_MTU='$MTU'
 AWG_HOST='$HOST'
+AWG_VER='$AWG_VER'
 EOF
 }
 
@@ -285,9 +382,27 @@ _deploy_bot() {  # _deploy_bot <token> <admins> — общая часть уст
     mkdir -p "$DEST/bot"; cp "$REPO_DIR/bot/awg_bot.py" "$DEST/bot/"
     [ -d "$DEST/venv" ] || python3 -m venv "$DEST/venv"
     "$DEST/venv/bin/pip" install -q -r "$REPO_DIR/bot/requirements.txt"
-    sed -e "s#PASTE_TOKEN_HERE#${token}#" \
-        -e "s#^Environment=AWG_BOT_ADMINS=.*#Environment=AWG_BOT_ADMINS=${admins}#" \
-        "$REPO_DIR/bot/awg-bot.service" > /etc/systemd/system/awg-bot.service
+    # Переменные бота (включая токен) кладём в файл с правами 600, а не в юнит:
+    # /etc/systemd/system читается всеми, и токен оттуда утекает любому
+    # локальному пользователю.
+    umask 077
+    {
+        echo "# Создано install.sh $(date -u +%FT%TZ). Права 600: здесь токен."
+        sed -e "s#PASTE_TOKEN_HERE#${token}#" \
+            -e "s#^AWG_BOT_ADMINS=.*#AWG_BOT_ADMINS=${admins}#" \
+            "$REPO_DIR/bot/bot.env.template" | grep -v '^#'
+        # кнопка «Обновить слой» в боте должна тянуть ТУ ЖЕ ветку, откуда ставили,
+        # иначе установка с beta молча откатится на main
+        echo "AWG_INSTALL_SH_URL=https://raw.githubusercontent.com/blindtechnique/az-awg2/${REPO_BRANCH}/install.sh"
+    } > "$DEST/bot.env"
+    chmod 600 "$DEST/bot.env"
+    cp "$REPO_DIR/bot/awg-bot.service" /etc/systemd/system/awg-bot.service
+
+    # если юнит остался от прежней версии — вычищаем из него токен
+    if grep -q '^Environment=AWG_BOT_TOKEN=' /etc/systemd/system/awg-bot.service 2>/dev/null; then
+        sed -i '/^Environment=AWG_BOT_TOKEN=/d' /etc/systemd/system/awg-bot.service
+        log "токен убран из юнита — теперь он только в $DEST/bot.env (600)"
+    fi
     systemctl daemon-reload; systemctl enable --now awg-bot
     # запомним факт установки бота в state (для --update)
     if [ -f "$STATE" ]; then
@@ -314,6 +429,19 @@ setup_bot() {  # вызывается из awg_layer при первичной �
 }
 
 # ── доустановка бота ОТДЕЛЬНО, после установки слоя (--install-bot) ───────────
+# Разовая миграция: у кого токен лежит в юните — переносим в bot.env и стираем.
+migrate_bot_env() {
+    local unit=/etc/systemd/system/awg-bot.service
+    [ -f "$unit" ] || return 0
+    grep -q '^Environment=AWG_BOT_TOKEN=' "$unit" || return 0
+    local tok adm
+    tok="$(grep -oP '^Environment=AWG_BOT_TOKEN=\K\S+' "$unit" || true)"
+    adm="$(grep -oP '^Environment=AWG_BOT_ADMINS=\K\S+' "$unit" || true)"
+    [ -n "$tok" ] || return 0
+    log "Переношу токен бота из юнита в $DEST/bot.env (юнит читается всеми)"
+    _deploy_bot "$tok" "$adm"
+}
+
 install_bot_only() {
     if [ ! -f /etc/amnezia/amneziawg/services.env ]; then
         log "Слой AmneziaWG ещё не установлен. Сначала: bash install.sh"
@@ -362,9 +490,16 @@ remove_bot_only() {
 awg_layer() {
     [ -f "$STATE" ] && . "$STATE"
     local P="${AWG_PRESET:-medium}" T="${AWG_TEMPLATE:-}" F="${AWG_FP:-chrome}"
-    local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}"
-    log "Слой AmneziaWG 2.0 параллельно ванили (обфускация $P/${T:-default}, MTU $M)…"
-    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" \
+    local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}" V="${AWG_VER:-both}"
+    case "$V" in
+        2)    log "Слой AmneziaWG 2.0 параллельно ванили (обфускация $P/${T:-default}, MTU $M)…" ;;
+        3)    log "Слой AmneziaWG 3.0 параллельно ванили (userspace-датапас)…" ;;
+        both) log "Слои AmneziaWG 2.0 и 3.0 параллельно ванили…" ;;
+    esac
+    # ветку передаём вниз: integration запишет её в .layer-branch, и проверка
+    # обновлений будет сравнивать с той же веткой, откуда ставили
+    AWG_REPO_BRANCH="$REPO_BRANCH" \
+    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
         ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
         ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}
@@ -373,7 +508,13 @@ awg_layer() {
     echo
     log "✅ Готово. Ванильный AntiZapret работает как раньше, AmneziaWG 2.0 — параллельно."
     log "   Порты AWG закреплены в /etc/amnezia/amneziawg/services.env"
-    log "   Управление клиентами — через бота или:  awg-client add myphone antizapret"
+    case "$V" in
+        2) log "   Клиенты:  awg-client add myphone antizapret" ;;
+        3) log "   Клиенты:  awg-client add myphone antizapret3   (слой 3.0)" ;;
+        *) log "   Клиенты 2.0:  awg-client add myphone antizapret"
+           log "   Клиенты 3.0:  awg-client add myphone antizapret3" ;;
+    esac
+    log "   Проверка связности:  awg-doctor"
 }
 
 # ── обновление кода без переконфигурации (обфускация, порты и клиенты не меняются)
@@ -384,6 +525,7 @@ update_layer() {
         exit 1
     fi
     log "Обновление AntiZapret-AWG (код и сервисы; обфускация, порты и клиенты НЕ трогаются)…"
+    migrate_bot_env
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --update
     setup_stats
     if [ -f /etc/systemd/system/awg-bot.service ]; then

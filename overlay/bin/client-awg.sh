@@ -32,6 +32,9 @@ SERVICES="${AWG_DIR}/services.env"
 resolve_service() {
     local svc="${1:-antizapret}"
     [ -f "$SERVICES" ] && . "$SERVICES"
+    # LAYER=2 — kernel-модуль (обычные сервисы), LAYER=3 — userspace-датапас.
+    # От него зависят и профиль обфускации, и MTU, и способ перезагрузки peers.
+    LAYER=2
     case "$svc" in
         antizapret)
             IFACE="${AZ_IFACE:-antizapret}"; SUBNET="${AZ_SUBNET:-10.29.8}"
@@ -39,7 +42,17 @@ resolve_service() {
         vpn)
             IFACE="${VPN_IFACE:-vpn}"; SUBNET="${VPN_SUBNET:-10.28.8}"
             PORT="${VPN_PORT:-51080}"; DNS_SRV="${VPN_DNS:-10.29.8.1}"; SPLIT="${VPN_SPLIT:-0}" ;;
-        *) die "Неизвестный сервис: $svc (antizapret|vpn)" ;;
+        antizapret3)
+            [ "${LAYER3:-0}" = 1 ] || die "Слой 3.0 не установлен (install.sh --awg both)"
+            IFACE="${AZ3_IFACE:-antizapret-awg3}"; SUBNET="${AZ3_SUBNET:-10.29.10}"
+            PORT="${AZ3_PORT:-0}"; DNS_SRV="${AZ3_DNS:-10.29.8.1}"; SPLIT="${AZ3_SPLIT:-1}"
+            LAYER=3; MTU="${MTU3:-1380}" ;;
+        vpn3)
+            [ "${LAYER3:-0}" = 1 ] || die "Слой 3.0 не установлен (install.sh --awg both)"
+            IFACE="${VPN3_IFACE:-vpn-awg3}"; SUBNET="${VPN3_SUBNET:-10.28.10}"
+            PORT="${VPN3_PORT:-0}"; DNS_SRV="${VPN3_DNS:-10.29.8.1}"; SPLIT="${VPN3_SPLIT:-0}"
+            LAYER=3; MTU="${MTU3:-1380}" ;;
+        *) die "Неизвестный сервис: $svc (antizapret|vpn|antizapret3|vpn3)" ;;
     esac
     SERVER_CONF="${AWG_DIR}/${IFACE}.conf"
     [ -f "$SERVER_CONF" ] || die "Нет серверного конфига $SERVER_CONF"
@@ -47,11 +60,21 @@ resolve_service() {
 
 # ── единый профиль обфускации (как AWG_OBFUSCATION для рендера клиента) ───────
 load_obfuscation() {
+    # у слоя 3.0 свой профиль и свои параметры, которых нет в 2.0
+    local keys="Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5"
+    # STATE_ENV задаём явно в обеих ветках: regen-all перебирает сервисы обоих
+    # слоёв в одном процессе, и «залипшее» значение указало бы на чужой профиль.
+    STATE_ENV="${AWG_DIR}/obfuscation.env"
+    if [ "${LAYER:-2}" = 3 ]; then
+        STATE_ENV="${AWG_DIR}/obfuscation3.env"
+        keys="$keys HeaderProtectionKey ContentPaddingAddition RekeyAfterTime"
+        keys="$keys RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts"
+    fi
     [ -f "$STATE_ENV" ] || die "Нет $STATE_ENV — сначала запусти awg-obfuscation.sh"
     # shellcheck disable=SC1090
     . "$STATE_ENV"
     AWG_OBFUSCATION=""
-    for k in Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5; do
+    for k in $keys; do
         v="AWG_${k}"; val="${!v:-}"
         [ -n "$val" ] && AWG_OBFUSCATION+="${k} = ${val}"$'\n'
     done
@@ -207,10 +230,23 @@ list_clients() {
 
 # ── пересоздать конфиги всех клиентов (после смены обфускации) ────────────────
 regen_all() {
-    load_obfuscation
     local svc conf name
-    for svc in antizapret vpn; do
-        resolve_service "$svc" 2>/dev/null || continue
+    # shellcheck disable=SC1090
+    [ -f "$SERVICES" ] && . "$SERVICES"
+    # Слои независимы: у каждого свой профиль, поэтому load_obfuscation вызываем
+    # ПОСЛЕ resolve_service — она и выбирает obfuscation.env либо obfuscation3.env.
+    # Ненужные сервисы отсеиваем ДО вызова: resolve_service/load_obfuscation
+    # завершаются через die(), то есть уронили бы весь regen-all, а не итерацию.
+    for svc in antizapret vpn antizapret3 vpn3; do
+        case "$svc" in
+            *3) [ "${LAYER3:-0}" = 1 ] || continue
+                [ -f "${AWG_DIR}/obfuscation3.env" ] || continue ;;
+            *)  [ "${LAYER2:-1}" = 1 ] || continue
+                [ -f "${AWG_DIR}/obfuscation.env" ] || continue ;;
+        esac
+        [ -d "${CLIENT_DIR}/${svc}" ] || continue
+        resolve_service "$svc"
+        load_obfuscation
         for conf in "${CLIENT_DIR}/${svc}"/*-am.conf; do
             [ -f "$conf" ] || continue
             name="$(basename "$conf" | sed "s/^${svc}-//;s/-am.conf//")"
@@ -219,7 +255,11 @@ regen_all() {
 import sys, re
 path, block = sys.argv[1], sys.argv[2]
 txt = open(path, encoding="utf-8").read().splitlines()
-obf = {"Jc","Jmin","Jmax","S1","S2","S3","S4","H1","H2","H3","H4","I1","I2","I3","I4","I5"}
+obf = {"Jc","Jmin","Jmax","S1","S2","S3","S4","H1","H2","H3","H4","I1","I2","I3","I4","I5",
+       # ключи 3.0: их тоже вычищаем, иначе после смены профиля в конфиге
+       # останется старый header protection и клиент не сойдётся с сервером
+       "HeaderProtectionKey","ContentPaddingAddition","RekeyAfterTime","RekeyTimeout",
+       "RejectAfterTime","KeepaliveTimeout","MaxHandshakeAttempts"}
 out, in_iface = [], False
 for line in txt:
     key = line.split("=",1)[0].strip() if "=" in line else ""

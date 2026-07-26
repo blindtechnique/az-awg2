@@ -36,7 +36,11 @@ def parse_conf(text: str) -> dict:
     data = {"interface": {}, "peer": {}, "awg": {}, "raw": text}
     section = None
     awg_keys = {"jc", "jmin", "jmax", "s1", "s2", "s3", "s4",
-                "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"}
+                "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5",
+                # параметры AmneziaWG 3.0 (у клиентов слоя 3.0)
+                "headerprotectionkey", "contentpaddingaddition",
+                "rekeyaftertime", "rekeytimeout", "rejectaftertime",
+                "keepalivetimeout", "maxhandshakeattempts"}
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
@@ -114,10 +118,24 @@ def build_amnezia_json(conf: dict, name: str) -> dict:
         "psk_key": conf["peer"].get("PresharedKey", ""),
         "server_pub_key": conf["peer"].get("PublicKey", ""),
         "mtu": mtu,
+        # Явный список маршрутов. Без него приложение вычисляет режим туннеля по
+        # тексту конфига и сравнивает его со строкой «AllowedIPs = 0.0.0.0/0, ::/0»
+        # буквально — любое другое написание оно принимает за раздельное
+        # туннелирование. С этим полем режим определяется однозначно.
+        "allowed_ips": [a.strip() for a in
+                        conf["peer"].get("AllowedIPs", "").split(",") if a.strip()],
+        "persistent_keep_alive": conf["peer"].get("PersistentKeepalive", "25"),
     }
     for i in ("I1", "I2", "I3", "I4", "I5"):
         if i in awg:
             last_config[i] = awg[i]
+    # Параметры AmneziaWG 3.0 кладём в last_config: приложение читает их именно
+    # оттуда (AwgClientConfig::fromJson). Клиенты слоя 2.0 их просто не имеют.
+    for k in ("HeaderProtectionKey", "ContentPaddingAddition", "RekeyAfterTime",
+              "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout",
+              "MaxHandshakeAttempts"):
+        if k in awg:
+            last_config[k] = awg[k]
 
     # Версия протокола для приложения Amnezia VPN.
     #
@@ -129,6 +147,10 @@ def build_amnezia_json(conf: dict, name: str) -> dict:
     #
     # Считаем ровно по логике самого клиента (ImportController::
     # extractWireGuardConfig): есть S3 и S4 → «2», иначе только I-пакеты → «1.5».
+    #
+    # Версии «3» приложение пока не знает вообще (в protocolConstants.h есть
+    # только 1.5 и 2), поэтому для клиентов слоя 3.0 максимум, который оно
+    # способно показать, — «2»; сами v3-параметры при этом не теряются.
     has_s34 = bool(last_config.get("S3")) and bool(last_config.get("S4"))
     has_ijunk = any(last_config.get(i) for i in ("I1", "I2", "I3", "I4", "I5"))
     protocol_version = "2" if has_s34 else ("1.5" if has_ijunk else "")

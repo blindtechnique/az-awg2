@@ -5,27 +5,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# ── конфигурация бота (заполняется установщиком) ──
-Environment=AWG_BOT_TOKEN=PASTE_TOKEN_HERE
-Environment=AWG_BOT_ADMINS=123456789
-Environment=AWG_CLIENT_SH=/usr/local/bin/awg-client
-Environment=AWG_OBF_SH=/usr/local/bin/awg-obfuscation
-Environment=AWG_BACKUP_SH=/usr/local/bin/awg-backup
-Environment=AWG_UPSTREAM_CLIENT_SH=/root/antizapret/client.sh
-Environment=AWG_CLIENT_DIR=/opt/antizapret-awg/clients
-Environment=AWG_OVPN_DIR=/root/antizapret/client/openvpn
-Environment=AWG_OVPN_STATUS_DIR=/etc/openvpn/server/logs
-Environment=AWG_VANILLA_AM_DIR=/root/antizapret/client/amneziawg
-Environment=AWG_CLIENT_SH_LOCK=/run/antizapret-client.lock
-Environment=AWG_RUNNER_PY=/opt/antizapret-awg/az_setup_runner.py
-Environment=AWG_STATS_PY=/opt/antizapret-awg/awg_stats.py
-Environment=AWG_EXPORT_PY=/opt/antizapret-awg/awg-export.py
-Environment=AWG_VENV_PY=/opt/antizapret-awg/venv/bin/python
+# Токен — это фактически пароль от сервера, а юниты в /etc/systemd/system
+# читаются всеми (права 644). Поэтому все переменные, включая токен, вынесены
+# в отдельный файл с правами 600 — его создаёт установщик.
+#
+# Бот пока работает от root: он дёргает client.sh ванили, правит конфиги в
+# /etc/amnezia/amneziawg и перезапускает юниты. Понижение до отдельного
+# пользователя требует перевода всех этих вызовов на sudo с точечными
+# правилами — это отдельный шаг, чтобы не сломать функциональность.
+EnvironmentFile=/opt/antizapret-awg/bot.env
 ExecStart=/opt/antizapret-awg/venv/bin/python /opt/antizapret-awg/bot/awg_bot.py
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
-ProtectHome=false
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

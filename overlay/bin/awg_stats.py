@@ -51,19 +51,32 @@ def _ifaces():
     """
     env = os.path.join(AWG_DIR, "services.env")
     az, vpn, mode = "antizapret", "vpn", "replace"
+    az3, vpn3, layer2, layer3 = "antizapret-awg3", "vpn-awg3", "1", "0"
     try:
         for line in open(env, encoding="utf-8"):
             line = line.strip()
             if line.startswith("AZ_IFACE="):
-                az = line.split("=", 1)[1].strip()
+                az = line.split("=", 1)[1].strip().strip("'\"")
             elif line.startswith("VPN_IFACE="):
-                vpn = line.split("=", 1)[1].strip()
+                vpn = line.split("=", 1)[1].strip().strip("'\"")
+            elif line.startswith("AZ3_IFACE="):
+                az3 = line.split("=", 1)[1].strip().strip("'\"")
+            elif line.startswith("VPN3_IFACE="):
+                vpn3 = line.split("=", 1)[1].strip().strip("'\"")
+            elif line.startswith("LAYER2="):
+                layer2 = line.split("=", 1)[1].strip().strip("'\"")
+            elif line.startswith("LAYER3="):
+                layer3 = line.split("=", 1)[1].strip().strip("'\"")
             elif line.startswith("MODE="):
-                mode = line.split("=", 1)[1].strip()
+                mode = line.split("=", 1)[1].strip().strip("'\"")
     except OSError:
         pass
 
-    result = [(az, "awg", "awg2"), (vpn, "awg", "awg2")]
+    result = [(az, "awg", "awg2"), (vpn, "awg", "awg2")] if layer2 == "1" else []
+    # слой 3.0: интерфейсы userspace-датапаса. Счётчики rx/tx/handshake amneziawg-go
+    # отдаёт через тот же UAPI, что читает `awg show`, поэтому бинарник тот же.
+    if layer3 == "1":
+        result += [(az3, "awg", "awg3"), (vpn3, "awg", "awg3")]
     # ванильные WG-интерфейсы добавляем только когда они НЕ совпадают с нашими
     # (в parallel/keep — не совпадают; в legacy replace наши имена = ванильные,
     #  отдельного ванильного слоя там нет). Опрашиваем через wg, если он есть.
@@ -129,7 +142,7 @@ WG_DIR = os.environ.get("WG_DIR", "/etc/wireguard")
 
 def _conf_path(iface: str, origin: str) -> str:
     """Наши awg-конфиги лежат в AWG_DIR, ванильные wg — в /etc/wireguard."""
-    base = AWG_DIR if origin == "awg2" else WG_DIR
+    base = WG_DIR if origin == "vanilla" else AWG_DIR
     return os.path.join(base, f"{iface}.conf")
 
 
@@ -407,7 +420,8 @@ def overview() -> str:
             is_on = hs and (now - hs) < ONLINE_WINDOW
             online += 1 if is_on else 0
             dot = "🟢" if is_on else "⚪️"
-            tag = "🅰️" if origin == "vanilla" else "🅾️"   # ваниль / AWG 2.0 overlay
+            # 🅰️ ваниль AntiZapret · 🅾️ наш слой 2.0 · 🅾️³ наш слой 3.0
+            tag = {"vanilla": "🅰️", "awg3": "🅾️³"}.get(origin, "🅾️")
             drow = c.execute("SELECT rx,tx FROM daily WHERE pubkey=? AND day=?",
                              (pk, today)).fetchone()
             td = human((drow[0] if drow else 0) + (drow[1] if drow else 0))

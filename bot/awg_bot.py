@@ -46,7 +46,7 @@ SERVICES_ENV = os.environ.get("AWG_SERVICES_ENV", "/etc/amnezia/amneziawg/servic
 STATUS_FILE = os.environ.get("AWG_UPDATE_STATUS", "/opt/antizapret-awg/az-update-status.json")
 INSTALL_SH_URL = os.environ.get(
     "AWG_INSTALL_SH_URL",
-    "https://raw.githubusercontent.com/blindtechnique/az-awg2/main/install.sh")
+    "https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh")
 LOG_DIR = "/var/log"
 
 if not TOKEN or not ADMINS:
@@ -229,17 +229,25 @@ def obf_env() -> dict:
     передаём точные пути из services.env."""
     env = dict(os.environ)
     az, vpn = "antizapret", "vpn"
+    az3, vpn3 = "antizapret-awg3", "vpn-awg3"
     try:
         for line in open(SERVICES_ENV, encoding="utf-8"):
             line = line.strip()
             if line.startswith("AZ_IFACE="):
-                az = line.split("=", 1)[1]
+                az = line.split("=", 1)[1].strip("'\"")
             elif line.startswith("VPN_IFACE="):
-                vpn = line.split("=", 1)[1]
+                vpn = line.split("=", 1)[1].strip("'\"")
+            elif line.startswith("AZ3_IFACE="):
+                az3 = line.split("=", 1)[1].strip("'\"")
+            elif line.startswith("VPN3_IFACE="):
+                vpn3 = line.split("=", 1)[1].strip("'\"")
     except OSError:
         pass
     env["AWG_AZ_CONF"] = f"/etc/amnezia/amneziawg/{az}.conf"
     env["AWG_VPN_CONF"] = f"/etc/amnezia/amneziawg/{vpn}.conf"
+    # слой 3.0 — свои интерфейсы и свой профиль (файлы obfuscation3.*)
+    env["AWG3_AZ_CONF"] = f"/etc/amnezia/amneziawg/{az3}.conf"
+    env["AWG3_VPN_CONF"] = f"/etc/amnezia/amneziawg/{vpn3}.conf"
     return env
 
 
@@ -330,14 +338,17 @@ async def show(c: CallbackQuery, text: str, markup: InlineKeyboardMarkup, stamp:
 # ── меню ──────────────────────────────────────────────────────────────────────
 
 def menu_header() -> str:
-    return (f"🔐 <b>AntiZapret-AWG 2.0</b> · <code>{html.escape(server_host())}</code>\n"
+    # в шапке показываем, какие слои реально подняты
+    _l2, _l3 = layers_available()
+    ver = "2.0 + 3.0" if (_l2 and _l3) else ("3.0" if _l3 else "2.0")
+    return (f"🔐 <b>AntiZapret-AWG {ver}</b> · <code>{html.escape(server_host())}</code>\n"
             "Выбери действие:")
 
 
 def main_menu() -> InlineKeyboardMarkup:
     return kb([
         [("👥 Клиенты", "clients:menu")],
-        [("ℹ️ Информация", "info:server")],
+        [("ℹ️ Информация", "info:server"), ("🩺 Диагностика", "doctor:run")],
         [("⚙️ Настройки AntiZapret", "azcfg:menu")],
         [("🔄 Обновление", "upd:menu")],
         [("🛡 Обфускация", "obf:menu")],
@@ -373,12 +384,46 @@ def has_awg_layer() -> bool:
     return os.path.exists(SERVICES_ENV)
 
 
+def layers_available() -> tuple:
+    """(есть_2_0, есть_3_0) по services.env.
+
+    Слои независимы: 2.0 живёт на kernel-модуле, 3.0 — на userspace-демоне
+    amneziawg-go, у каждого свои интерфейсы, порты и профиль обфускации.
+    Установщик мог поднять любой из них или оба сразу.
+    """
+    l2, l3 = True, False
+    try:
+        for line in open(SERVICES_ENV, encoding="utf-8"):
+            line = line.strip()
+            if line.startswith("LAYER2="):
+                l2 = line.split("=", 1)[1].strip("'\"") == "1"
+            elif line.startswith("LAYER3="):
+                l3 = line.split("=", 1)[1].strip("'\"") == "1"
+    except OSError:
+        pass
+    return l2, l3
+
+
+# человекочитаемые названия сервисов обоих слоёв
+SVC_TITLE = {
+    "antizapret":  "AmneziaWG 2.0 · AntiZapret",
+    "vpn":         "AmneziaWG 2.0 · Полный VPN",
+    "antizapret3": "AmneziaWG 3.0 · AntiZapret",
+    "vpn3":        "AmneziaWG 3.0 · Полный VPN",
+}
+SVC_TAG = {"antizapret": "🌐", "vpn": "🔒", "antizapret3": "🌐³", "vpn3": "🔒³"}
+
+
 def clients_menu() -> InlineKeyboardMarkup:
     # показываем только те типы клиентов, что реально доступны на сервере
     # (пользователь мог поставить AntiZapret без OpenVPN и/или без WireGuard)
     rows = []
     if has_awg_layer():
-        rows.append([("➕ AmneziaWG 2.0", "awg:menu")])
+        # подпись зависит от того, какие слои подняты: 2.0, 3.0 или оба
+        _l2, _l3 = layers_available()
+        _lbl = "➕ AmneziaWG 2.0" if not _l3 else ("➕ AmneziaWG 3.0" if not _l2
+                                                  else "➕ AmneziaWG 2.0 / 3.0")
+        rows.append([(_lbl, "awg:menu")])
     row2 = []
     if has_wireguard():
         row2.append(("➕ Стоковый WG", "vanilla:add"))
@@ -668,23 +713,27 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d == "clients:list":
         az = [("antizapret", n) for n in awg_names("antizapret")]
         vp = [("vpn", n) for n in awg_names("vpn")]
+        # клиенты слоя 3.0 живут в тех же каталогах, просто другие сервисы
+        for _s3 in ("antizapret3", "vpn3"):
+            az += [(_s3, n) for n in awg_names(_s3)]
         van = [("vanilla", n) for n in vanilla_wg_names()]
         ov = [("ovpn", n) for n in ovpn_names()]
         rows = []
         for svc, n in (az + vp + van + ov)[:80]:
-            tag = {"antizapret": "🌐", "vpn": "🔒", "vanilla": "🅰️", "ovpn": "📄"}[svc]
+            tag = {**SVC_TAG, "vanilla": "🅰️", "ovpn": "📄"}[svc]
             rows.append([(f"{tag} {n}", f"cli:{svc}:{n}")])
         if not rows:
             rows = [[("(клиентов нет)", "clients:menu")]]
         rows.append(back("clients:menu"))
-        return await show(c, "Выбери клиента:\n"
-                          "🌐 AWG 2.0 · AntiZapret (split)   🔒 AWG 2.0 · полный VPN\n"
-                          "🅰️ сток WG   📄 OpenVPN",
-                          kb(rows))
+        legend = ("Выбери клиента:\n"
+                  "🌐 AWG 2.0 · AntiZapret (split)   🔒 AWG 2.0 · полный VPN\n")
+        if layers_available()[1]:
+            legend += "🌐³ AWG 3.0 · AntiZapret   🔒³ AWG 3.0 · полный VPN\n"
+        return await show(c, legend + "🅰️ сток WG   📄 OpenVPN", kb(rows))
 
     if d.startswith("cli:"):
         _, svc, name = d.split(":", 2)
-        tag = {"antizapret": "AmneziaWG 2.0 · AntiZapret", "vpn": "AmneziaWG 2.0 · Полный VPN",
+        tag = {**SVC_TITLE,
                "vanilla": "Стоковый WG · AntiZapret + Полный VPN",
                "ovpn": "OpenVPN"}.get(svc, svc)
         return await show(c, f"👤 <b>{html.escape(name)}</b>\n{tag}", client_menu(svc, name))
@@ -701,8 +750,10 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
             return await show(c, body,
                               kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
                                   [("⬅️ Назад", f"cli:{svc}:{name}")]]), stamp=True)
-        # ванильный клиент фильтруется по origin=vanilla (имя может совпасть с awg2)
-        args = ["client", name, "vanilla"] if svc == "vanilla" else ["client", name]
+        # Имя клиента уникально только внутри слоя: 'phone' может быть и в 2.0,
+        # и в 3.0, и в ванили. Поэтому статистику всегда просим с origin.
+        origin = {"vanilla": "vanilla", "antizapret3": "awg3", "vpn3": "awg3"}.get(svc, "awg2")
+        args = ["client", name, origin]
         return await show(c, stats(*args),
                           kb([[("🔄 Обновить", f"clinfo:{svc}:{name}")],
                               [("⬅️ Назад", f"cli:{svc}:{name}")]]), stamp=True)
@@ -738,9 +789,28 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         return await show(c, txt, kb([[("⬅️ К списку", "clients:list")], back()]))
 
     if d == "awg:menu":
+        # если поднят и слой 3.0 — сперва спрашиваем версию протокола,
+        # иначе оставляем прежний экран без лишнего шага
+        _l2, _l3 = layers_available()
+        if _l3 and _l2:
+            return await show(c, "Версия протокола:\n"
+                                 "<i>3.0 — header protection, content padding и"
+                                 " рандомные тайминги; нужны свежие клиенты.\n"
+                                 "2.0 — работает с любыми, включая старые.</i>",
+                              kb([[("AmneziaWG 2.0", "awgver:2")],
+                                  [("AmneziaWG 3.0", "awgver:3")],
+                                  back("clients:menu")]))
+        suff = "3" if (_l3 and not _l2) else ""
         return await show(c, "AmneziaWG — тип:", kb([
-            [("🌐 AntiZapret (split)", "awgsvc:antizapret")],
-            [("🔒 Полный VPN", "awgsvc:vpn")], back("clients:menu")]))
+            [("🌐 AntiZapret (split)", f"awgsvc:antizapret{suff}")],
+            [("🔒 Полный VPN", f"awgsvc:vpn{suff}")], back("clients:menu")]))
+
+    if d.startswith("awgver:"):
+        suff = "3" if d.split(":", 1)[1] == "3" else ""
+        ver = "3.0" if suff else "2.0"
+        return await show(c, f"AmneziaWG {ver} — тип туннеля:", kb([
+            [("🌐 AntiZapret (split)", f"awgsvc:antizapret{suff}")],
+            [("🔒 Полный VPN", f"awgsvc:vpn{suff}")], back("awg:menu")]))
     if d.startswith("awgsvc:"):
         return await ask_name(c, state, kind="awg", svc=d.split(":", 1)[1])
 
@@ -757,8 +827,15 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d == "temp:menu":
         rows = []
         if has_awg_layer():
-            rows.append([("🌐 AWG AntiZapret", "temptype:antizapret")])
-            rows.append([("🔒 AWG Полный VPN", "temptype:vpn")])
+            _l2, _l3 = layers_available()
+            # подпись версии добавляем только когда слоёв два — иначе лишний шум
+            v2 = " 2.0" if _l3 and _l2 else ""
+            if _l2:
+                rows.append([(f"🌐 AWG{v2} AntiZapret", "temptype:antizapret")])
+                rows.append([(f"🔒 AWG{v2} Полный VPN", "temptype:vpn")])
+            if _l3:
+                rows.append([("🌐³ AWG 3.0 AntiZapret", "temptype:antizapret3")])
+                rows.append([("🔒³ AWG 3.0 Полный VPN", "temptype:vpn3")])
         if has_openvpn():
             rows.append([("📄 OpenVPN", "temptype:ovpn")])
         rows.append(back("clients:menu"))
@@ -936,50 +1013,104 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
                                 "Если бот перезапустился — итог придёт отдельным сообщением.")
 
     # ── перенастройка обфускации кнопками (порты и клиентские ключи не меняются)
+    #    reconf:*  — слой 2.0, reconf3:* — слой 3.0. Шаги и вид меню одинаковые.
     if d == "reconf:preset":
-        return await show(c, "🛠 <b>Перенастройка обфускации</b>\nИнтенсивность:",
-                          kb([[("router", "reconf:p:router"), ("low", "reconf:p:low")],
-                              [("medium", "reconf:p:medium"), ("high", "reconf:p:high")],
-                              [("paranoid", "reconf:p:paranoid")], back("upd:menu")]))
-    if d.startswith("reconf:p:"):
-        preset = d.split(":", 2)[2]
+        _l2, _l3 = layers_available()
+        if _l3 and _l2:
+            # оба слоя: сперва спрашиваем, какому менять профиль
+            return await show(c, "🛠 <b>Перенастройка обфускации</b>\nКакой слой:",
+                              kb([[("AmneziaWG 2.0", "reconf:preset:2")],
+                                  [("AmneziaWG 3.0", "reconf3:preset")],
+                                  back("upd:menu")]))
+        if _l3 and not _l2:
+            d = "reconf3:preset"
+    if d in ("reconf:preset", "reconf:preset:2", "reconf3:preset"):
+        p = "reconf3" if d.startswith("reconf3") else "reconf"
+        ttl = " 3.0" if p == "reconf3" else ""
+        return await show(c, f"🛠 <b>Перенастройка обфускации{ttl}</b>\nИнтенсивность:",
+                          kb([[("router", f"{p}:p:router"), ("low", f"{p}:p:low")],
+                              [("medium", f"{p}:p:medium"), ("high", f"{p}:p:high")],
+                              [("paranoid", f"{p}:p:paranoid")], back("upd:menu")]))
+    if d.startswith("reconf:p:") or d.startswith("reconf3:p:"):
+        p, _, preset = d.split(":", 2)
         return await show(c, f"Пресет <b>{preset}</b>. Мимикрия:",
-                          kb([[("авто", f"reconf:t:{preset}:auto"),
-                               ("quic", f"reconf:t:{preset}:quic"),
-                               ("tls", f"reconf:t:{preset}:tls")],
-                              [("web", f"reconf:t:{preset}:web"),
-                               ("voip", f"reconf:t:{preset}:voip"),
-                               ("dns", f"reconf:t:{preset}:dns")],
-                              [("mixed", f"reconf:t:{preset}:mixed")],
-                              back("reconf:preset")]))
-    if d.startswith("reconf:t:"):
-        _, _, preset, tpl = d.split(":", 3)
-        await show(c, f"⏳ Применяю {preset}/{tpl}…", kb([back("upd:menu")]))
-        args = [OBF_SH, "--preset", preset, "--fp", "chrome", "--apply"]
+                          kb([[("авто", f"{p}:t:{preset}:auto"),
+                               ("quic", f"{p}:t:{preset}:quic"),
+                               ("tls", f"{p}:t:{preset}:tls")],
+                              [("web", f"{p}:t:{preset}:web"),
+                               ("voip", f"{p}:t:{preset}:voip"),
+                               ("dns", f"{p}:t:{preset}:dns")],
+                              [("mixed", f"{p}:t:{preset}:mixed")],
+                              back(f"{p}:preset")]))
+    if d.startswith("reconf:t:") or d.startswith("reconf3:t:"):
+        p, _, preset, tpl = d.split(":", 3)
+        v3 = p == "reconf3"
+        ver = "3.0" if v3 else "2.0"
+        await show(c, f"⏳ Применяю {preset}/{tpl} к {ver}…", kb([back("upd:menu")]))
+        args = [OBF_SH] + (["--v3"] if v3 else []) + \
+               ["--preset", preset, "--fp", "chrome", "--apply"]
         if tpl != "auto":
-            args[3:3] = ["--template", tpl]
+            args[-4:-4] = ["--template", tpl]
         rc, out, err = run(args, timeout=180, env=obf_env())
         if rc != 0:
             return await show(c, f"❌ {html.escape(err or out)[:800]}", kb([back("upd:menu")]))
         run([CLIENT_SH, "regen-all"], timeout=300)
-        return await show(c, f"✅ Профиль <b>{preset}/{tpl}</b> применён, конфиги "
+        return await show(c, f"✅ Профиль <b>{preset}/{tpl}</b> ({ver}) применён, конфиги "
                           "клиентов пересозданы.\n⚠️ Клиентам нужно переимпортировать "
                           "конфиги (Скачать конфиг → заново в приложение).\n"
                           "Порты и ключи не менялись.", kb([back("upd:menu")]))
 
+    if d in ("doctor:run", "doctor:deep", "doctor:selftest"):
+        deep = d == "doctor:deep"
+        if d == "doctor:selftest":
+            await show(c, "🩺 Проверяю выдаваемые конфиги…", kb([back()]))
+            rc, out, err = run([PY, "/opt/antizapret-awg/awg-selftest.py", "--all"],
+                               timeout=120)
+        else:
+            await show(c, "🩺 Проверяю связность…" +
+                       ("\n<i>глубокая проверка поднимает клиента в namespace, "
+                        "это до минуты</i>" if deep else ""), kb([back()]))
+            rc, out, err = run(["/usr/local/bin/awg-doctor"] + (["--deep"] if deep else []),
+                               timeout=240)
+        body = (out or err or "(пусто)")[-3300:]
+        rows = [[("🔄 Ещё раз", d)]]
+        if d != "doctor:deep":
+            rows.append([("🔬 Глубокая проверка", "doctor:deep")])
+        if d != "doctor:selftest":
+            rows.append([("📄 Проверить конфиги клиентов", "doctor:selftest")])
+        rows.append(back())
+        head = "🩺 <b>Диагностика</b>" + ("" if rc == 0 else " — есть замечания")
+        return await show(c, f"{head}\n<pre>{html.escape(body)}</pre>", kb(rows), stamp=True)
+
     if d == "obf:menu":
-        return await show(c, "🛡 Обфускация:", kb([
-            [("👁 Показать", "obf:show")], [("🔄 Перегенерировать", "obf:regen")], back()]))
-    if d == "obf:show":
-        rc, out, err = run([OBF_SH, "--show"])
-        return await show(c, f"🛡 <code>{html.escape((out or err)[:3500])}</code>",
+        # у слоёв 2.0 и 3.0 отдельные профили (obfuscation.env / obfuscation3.env):
+        # разные интерфейсы, разные датапасы. Если стоят оба — показываем оба ряда.
+        _l2, _l3 = layers_available()
+        rows = []
+        if _l2:
+            rows.append([("👁 Показать 2.0", "obf:show"), ("🔄 Сменить 2.0", "obf:regen")]
+                        if _l3 else [("👁 Показать", "obf:show")])
+            if not _l3:
+                rows.append([("🔄 Перегенерировать", "obf:regen")])
+        if _l3:
+            rows.append([("👁 Показать 3.0", "obf:show:3"), ("🔄 Сменить 3.0", "obf:regen:3")])
+        rows.append(back())
+        return await show(c, "🛡 Обфускация:", kb(rows))
+    if d in ("obf:show", "obf:show:3"):
+        v3 = d.endswith(":3")
+        rc, out, err = run([OBF_SH] + (["--v3"] if v3 else []) + ["--show"], env=obf_env())
+        head = "🛡 <b>AmneziaWG 3.0</b>\n" if v3 else ""
+        return await show(c, f"{head}<code>{html.escape((out or err)[:3500])}</code>",
                           kb([back("obf:menu")]))
-    if d == "obf:regen":
-        await show(c, "⏳ Перегенерация профиля…", kb([back("obf:menu")]))
-        rc, out, err = run([OBF_SH, "--regenerate"], timeout=120)
+    if d in ("obf:regen", "obf:regen:3"):
+        v3 = d.endswith(":3")
+        ver = "3.0" if v3 else "2.0"
+        await show(c, f"⏳ Перегенерация профиля {ver}…", kb([back("obf:menu")]))
+        rc, out, err = run([OBF_SH] + (["--v3"] if v3 else []) + ["--regenerate"],
+                           timeout=120, env=obf_env())
         if rc == 0:
             run([CLIENT_SH, "regen-all"], timeout=180)
-            return await show(c, "✅ Новый профиль применён, конфиги пересозданы.\n"
+            return await show(c, f"✅ Новый профиль {ver} применён, конфиги пересозданы.\n"
                               "Клиентам нужно переимпортировать конфиги.", kb([back("obf:menu")]))
         return await show(c, f"❌ {html.escape(err or out)[:800]}", kb([back("obf:menu")]))
 

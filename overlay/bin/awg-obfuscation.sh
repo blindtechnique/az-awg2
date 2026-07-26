@@ -16,7 +16,9 @@
 set -euo pipefail
 
 # ── пути ──────────────────────────────────────────────────────────────────────
-AWG_DIR="/etc/amnezia/amneziawg"
+AWG_DIR="${AWG_DIR:-/etc/amnezia/amneziawg}"   # переопределяется для тестов
+# Слой 2.0 и слой 3.0 держат РАЗНЫЕ профили: у 3.0 другой набор параметров
+# и другой MTU, а смешивать их нельзя — стороны должны совпадать внутри слоя.
 STATE_ENV="${AWG_DIR}/obfuscation.env"          # AWG_* переменные (единый источник)
 STATE_META="${AWG_DIR}/obfuscation.meta"        # preset/template/fp/host/mtu
 GEN="$(dirname "$(readlink -f "$0")")/../obfuscation/awg_obfuscate.py"
@@ -26,6 +28,9 @@ SERVER_VPN="${AWG_VPN_CONF:-${AWG_DIR}/vpn.conf}"
 
 PRESET="medium"; TEMPLATE=""; FP="chrome"; HOST=""; MTU=0; EXTREME=0
 APPLY=0; SHOW=0; REGEN=0; INTERACTIVE=1
+# --v3: генерировать профиль для слоя AmneziaWG 3.0 (свои файлы состояния,
+# параметры header protection / content padding / таймингов)
+V3=0
 
 # ── парсинг флагов ────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -35,6 +40,7 @@ while [ $# -gt 0 ]; do
         --fp)        FP="$2"; shift 2 ;;
         --host)      HOST="$2"; shift 2 ;;
         --mtu)       MTU="$2"; shift 2 ;;
+        --v3)        V3=1; INTERACTIVE=0; shift ;;
         --extreme)   EXTREME=1; shift ;;
         --apply)     APPLY=1; INTERACTIVE=0; shift ;;
         --show)      SHOW=1; INTERACTIVE=0; shift ;;
@@ -44,6 +50,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# ── переключение на слой 3.0 ────────────────────────────────────────────────
+if [ "$V3" = 1 ]; then
+    STATE_ENV="${AWG_DIR}/obfuscation3.env"
+    STATE_META="${AWG_DIR}/obfuscation3.meta"
+    GEN="$(dirname "$(readlink -f "$0")")/../obfuscation/awg3_obfuscate.py"
+    [ -f "$GEN" ] || GEN="/opt/antizapret-awg/awg3_obfuscate.py"
+    SERVER_ANTIZAPRET="${AWG3_AZ_CONF:-${AWG_DIR}/antizapret-awg3.conf}"
+    SERVER_VPN="${AWG3_VPN_CONF:-${AWG_DIR}/vpn-awg3.conf}"
+fi
+
 log() { printf '\033[1;36m[awg-obf]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[awg-obf]\033[0m %s\n' "$*" >&2; }
 
@@ -52,7 +68,7 @@ show_current() {
     if [ -f "$STATE_META" ]; then
         log "Текущий профиль обфускации:"; sed 's/^/    /' "$STATE_META"
         echo
-        log "Активные параметры (obfuscation.env):"; sed 's/^/    /' "$STATE_ENV"
+        log "Активные параметры ($(basename "$STATE_ENV")):"; sed 's/^/    /' "$STATE_ENV"
     else
         err "Профиль ещё не сгенерирован. Запусти без --show."
     fi
@@ -151,6 +167,28 @@ IFACE_BLOCK="$(
     done
     true    # гарантируем нулевой код подоболочки (иначе set -e убьёт скрипт на пустом I5)
 )"
+# ── параметры 3.0 в формате UAPI ────────────────────────────────────────────
+# amneziawg-tools (v1.0.20260618) их не парсит: `awg setconf` упал бы на
+# «Line unrecognized». Поэтому они НЕ идут в .conf, а лежат в <iface>.v3 и
+# применяются awg3-datapath.sh через UAPI-сокет уже после старта демона.
+# Берём их из ТОГО ЖЕ STATE_ENV, что и блок [Interface], — второй запуск
+# генератора дал бы другие случайные значения, и клиенты не сошлись бы с сервером.
+V3_BLOCK=""
+if [ "$V3" = 1 ]; then
+    V3_BLOCK="$(
+        # shellcheck disable=SC1090
+        . "$STATE_ENV"
+        [ -n "${AWG_HPK_HEX:-}" ] && printf 'header_protection_key=%s\n' "$AWG_HPK_HEX"
+        [ -n "${AWG_ContentPaddingAddition:-}" ] && printf 'content_padding_addition=%s\n' "$AWG_ContentPaddingAddition"
+        [ -n "${AWG_RekeyAfterTime:-}" ] && printf 'rekey_after_time=%s\n' "$AWG_RekeyAfterTime"
+        [ -n "${AWG_RekeyTimeout:-}" ] && printf 'rekey_timeout=%s\n' "$AWG_RekeyTimeout"
+        [ -n "${AWG_RejectAfterTime:-}" ] && printf 'reject_after_time=%s\n' "$AWG_RejectAfterTime"
+        [ -n "${AWG_KeepaliveTimeout:-}" ] && printf 'keepalive_timeout=%s\n' "$AWG_KeepaliveTimeout"
+        [ -n "${AWG_MaxHandshakeAttempts:-}" ] && printf 'max_handshake_attempts=%s\n' "$AWG_MaxHandshakeAttempts"
+        true   # пустой хвост не должен ронять скрипт под set -e
+    )"
+fi
+
 cat > "$STATE_META" <<EOF
 META_PRESET=$PRESET
 META_TEMPLATE=$TEMPLATE
@@ -163,6 +201,11 @@ log "Профиль сохранён в $STATE_ENV"
 echo
 echo "──────── сгенерированный [Interface]-блок ────────"
 echo "$IFACE_BLOCK"
+if [ -n "$V3_BLOCK" ]; then
+    echo "──────── параметры 3.0 (применяются через UAPI) ────────"
+    # ключ header protection — это секрет, в лог юнита ему не место
+    printf '%s\n' "$V3_BLOCK" | sed 's/^header_protection_key=.*/header_protection_key=(скрыт)/'
+fi
 echo "──────────────────────────────────────────────────"
 
 # ── применить к серверу ──────────────────────────────────────────────────────
@@ -184,6 +227,13 @@ apply_to_server() {
         printf '%s\n' "$IFACE_BLOCK"
         if [ -n "$peers" ]; then printf '\n%s\n' "$peers"; fi
     } > "$conf"
+    chmod 600 "$conf"
+    # слой 3.0: рядом с конфигом кладём UAPI-файл с v3-параметрами
+    if [ -n "$V3_BLOCK" ]; then
+        local v3f="${conf%.conf}.v3"
+        printf '%s\n' "$V3_BLOCK" > "$v3f"
+        chmod 600 "$v3f"
+    fi
     log "Применено к $name ($conf)"
 }
 
@@ -192,13 +242,17 @@ if [ "$APPLY" = 1 ]; then
     apply_to_server "$SERVER_VPN" "vpn"
     az_iface="$(basename "$SERVER_ANTIZAPRET" .conf)"
     vpn_iface="$(basename "$SERVER_VPN" .conf)"
+    # Слой 3.0 живёт в userspace-юните awg3@, а не в awg-quick@: у него свой
+    # датапас (amneziawg-go) и v3-ключи, которые awg-tools не понимают —
+    # их применяет awg3-datapath.sh через UAPI-сокет уже после старта.
+    if [ "$V3" = 1 ]; then unit_pfx="awg3@"; else unit_pfx="awg-quick@"; fi
     for i in "$az_iface" "$vpn_iface"; do
-        if systemctl list-unit-files | grep -q "awg-quick@"; then
-            log "Перезапуск awg-quick@$i (чистый старт)"
-            # stop + принудительный снос интерфейса (иначе awg-quick up: already exists) + start
-            systemctl stop "awg-quick@$i" 2>/dev/null || true
+        if systemctl list-unit-files | grep -q "$unit_pfx"; then
+            log "Перезапуск ${unit_pfx}${i} (чистый старт)"
+            # stop + принудительный снос интерфейса (иначе up: already exists) + start
+            systemctl stop "${unit_pfx}${i}" 2>/dev/null || true
             ip link del "$i" 2>/dev/null || true
-            systemctl start "awg-quick@$i" || err "Не удалось поднять awg-quick@$i"
+            systemctl start "${unit_pfx}${i}" || err "Не удалось поднять ${unit_pfx}${i}"
         fi
     done
     log "Готово. Клиентские конфиги синхронизируются автоматически (regen-all)."

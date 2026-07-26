@@ -1,0 +1,25 @@
+[Unit]
+Description=AmneziaWG 3.0 interface %i (userspace amneziawg-go)
+Documentation=https://github.com/amnezia-vpn/amneziawg-go
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+# маршрутизация AntiZapret поднимается после наших интерфейсов
+Before=antizapret.service
+
+[Service]
+Type=exec
+# amneziawg-go — ГЛАВНЫЙ процесс: systemd видит его падение и перезапускает.
+# (в awg-quick демон запускается «в фон» и его смерть остаётся незамеченной)
+ExecStart=/opt/antizapret-awg/awg3-datapath.sh run %i
+ExecStartPost=/opt/antizapret-awg/awg3-datapath.sh configure %i
+ExecStopPost=-/opt/antizapret-awg/awg3-datapath.sh cleanup %i
+Restart=on-failure
+RestartSec=3
+# userspace-датапас держит много горутин и сокетов
+LimitNPROC=infinity
+LimitNOFILE=infinity
+TasksMax=infinity
+Environment=LOG_LEVEL=error
+
+[Install]
+WantedBy=multi-user.target

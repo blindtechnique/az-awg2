@@ -25,8 +25,15 @@ set -euo pipefail
 
 PRESET="medium"; TEMPLATE=""; FP="chrome"; MTU=1320; HOST=""
 UPDATE=0; MIGRATE=0; CLI_AZ_PORT=""; CLI_VPN_PORT=""
+# какие версии протокола поднимать: 2 | 3 | both
+AWG_VER="both"
+# версии апстрима для слоя 3.0 (переопределяются переменными окружения)
+AWG_GO_REF="${AWG_GO_REF:-v3.0.1}"
+AWG_TOOLS_REF="${AWG_TOOLS_REF:-v1.0.20260618-2}"
+SRC=/opt/src
 while [ $# -gt 0 ]; do
     case "$1" in
+        --awg) AWG_VER="$2"; shift 2 ;;
         --preset) PRESET="$2"; shift 2 ;;
         --template) TEMPLATE="$2"; shift 2 ;;
         --fp) FP="$2"; shift 2 ;;
@@ -139,6 +146,58 @@ EOF
     fi
 }
 
+# ── 1b. amneziawg-go для слоя 3.0 ────────────────────────────────────────────
+# Kernel-модуль знает параметры только до 2.0 — в нём нет header protection,
+# content padding и таймингов. Поэтому 3.0 работает исключительно на userspace
+# демоне, который приходится собирать из исходников: готовых пакетов нет.
+# Слою 2.0 это никак не мешает — он остаётся на модуле.
+install_awg3() {
+    command -v amneziawg-go >/dev/null 2>&1 && command -v awg >/dev/null 2>&1 && {
+        log "amneziawg-go уже собран"; return 0; }
+    export DEBIAN_FRONTEND=noninteractive GOFLAGS=-buildvcs=false
+    apt-get install -y -qq build-essential git make curl ca-certificates >/dev/null
+    install_go3
+    export PATH="$PATH:/usr/local/go/bin"
+    mkdir -p "$SRC"
+    if [ ! -d "$SRC/amneziawg-go/.git" ]; then
+        git clone -q https://github.com/amnezia-vpn/amneziawg-go.git "$SRC/amneziawg-go"
+    fi
+    cd "$SRC/amneziawg-go"; git fetch -q --all --tags; git checkout -q "$AWG_GO_REF"
+    log "Сборка amneziawg-go $AWG_GO_REF (userspace-датапас для 3.0)…"
+    make >/dev/null
+    install -m0755 amneziawg-go /usr/local/bin/amneziawg-go
+    # awg/awg-quick уже стоят из PPA для слоя 2.0 — не трогаем, версия совместима
+    log "amneziawg-go установлен"
+}
+
+install_go3() {
+    local want ver sha tgz
+    if command -v go >/dev/null 2>&1; then
+        ver="$(go version | awk '{print $3}')"
+        # amneziawg-go 3.0 требует go >= 1.25 (его go.mod)
+        [ "$(printf '%s\ngo1.25.0\n' "$ver" | sort -V | head -1)" = "go1.25.0" ] && return 0
+    fi
+    log "Установка Go с go.dev…"
+    want="$(curl -fsSL https://go.dev/VERSION?m=text | head -1)"
+    [ -n "$want" ] || { err "не удалось узнать версию Go"; exit 1; }
+    tgz="${want}.linux-$(dpkg --print-architecture).tar.gz"
+    sha="$(curl -fsSL 'https://go.dev/dl/?mode=json' | python3 -c "
+import json,sys
+want=sys.argv[1]; f=sys.argv[2]
+for rel in json.load(sys.stdin):
+    if rel.get('version')==want:
+        for fl in rel.get('files',[]):
+            if fl.get('filename')==f: print(fl.get('sha256','')); break
+" "$want" "$tgz")"
+    [ -n "$sha" ] || { err "не нашёл sha256 для $tgz"; exit 1; }
+    mkdir -p "$SRC"; cd "$SRC"
+    curl -fsSLO "https://go.dev/dl/$tgz"
+    echo "$sha  $tgz" | sha256sum -c - >/dev/null || { err "контрольная сумма Go не сошлась"; exit 1; }
+    rm -rf /usr/local/go && tar -C /usr/local -xzf "$tgz" && rm -f "$tgz"
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+    echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+}
+
 # ── 2. overlay ───────────────────────────────────────────────────────────────
 deploy_overlay() {
     log "Развёртывание overlay в $DEST"
@@ -147,11 +206,16 @@ deploy_overlay() {
        "$OVERLAY/bin/awg-export.py" "$OVERLAY/bin/client-awg.sh" \
        "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg-reintegrate.sh" \
        "$OVERLAY/bin/awg-knot-view.sh" "$OVERLAY/bin/az_setup_runner.py" \
-       "$OVERLAY/bin/awg_stats.py" "$DEST/" 2>/dev/null || true
+       "$OVERLAY/bin/awg_stats.py" \
+       "$OVERLAY/bin/awg3-datapath.sh" "$OVERLAY/bin/awg3-uapi.py" \
+       "$OVERLAY/obfuscation/awg3_obfuscate.py" \
+       "$OVERLAY/bin/awg-doctor.sh" "$OVERLAY/bin/awg-selftest.py" \
+       "$OVERLAY/bin/awg-upstream-check.sh" "$DEST/" 2>/dev/null || true
     chmod +x "$DEST"/*.sh "$DEST"/*.py 2>/dev/null || true
     ln -sf "$DEST/awg-obfuscation.sh" /usr/local/bin/awg-obfuscation
     ln -sf "$DEST/client-awg.sh" /usr/local/bin/awg-client
     ln -sf "$DEST/awg-backup.sh" /usr/local/bin/awg-backup
+    ln -sf "$DEST/awg-doctor.sh" /usr/local/bin/awg-doctor
     mkdir -p /etc/systemd/system/awg-quick@.service.d
     cp "$OVERLAY/systemd/awg-quick@.service.d/override.conf" \
         /etc/systemd/system/awg-quick@.service.d/override.conf
@@ -172,8 +236,13 @@ deploy_overlay() {
     systemctl daemon-reload
     # зафиксировать текущую ревизию слоя (HEAD форка) — для проверки обновлений.
     # берём из git-репозитория, откуда запущена установка, или через ls-remote.
+    # ветку запоминаем отдельно: awg-upstream-check сравнивает ревизию именно
+    # с ней, иначе установка с beta вечно «отставала» бы от main
+    local branch; branch="$(git -C "$OVERLAY/.." rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [ -n "$branch" ] && [ "$branch" != HEAD ] || branch="${AWG_REPO_BRANCH:-main}"
+    echo "$branch" > "$DEST/.layer-branch"
     ( rev="$(git -C "$OVERLAY/.." rev-parse --short=12 HEAD 2>/dev/null)"
-      [ -z "$rev" ] && rev="$(git ls-remote https://github.com/blindtechnique/az-awg2.git refs/heads/main 2>/dev/null | cut -c1-12)"
+      [ -z "$rev" ] && rev="$(git ls-remote https://github.com/blindtechnique/az-awg2.git "refs/heads/$branch" 2>/dev/null | cut -c1-12)"
       [ -n "$rev" ] && echo "$rev" > "$DEST/.layer-rev" ) 2>/dev/null || true
     systemctl enable awg-reintegrate.service 2>/dev/null || true
 }
@@ -197,6 +266,14 @@ plan_services() {
     AZ_IFACE=antizapret-awg; AZ_SUBNET="${az_base%.*}.$(( ${az_base##*.} + 1 ))"
     VPN_IFACE=vpn-awg;       VPN_SUBNET="${vpn_base%.*}.$(( ${vpn_base##*.} + 1 ))"
     MODE=parallel
+
+    # Слой 3.0 — ещё +1 к третьему октету, чтобы не пересечься со слоем 2.0.
+    # Правила ванильного AntiZapret ходят по агрегатам /15 и /16, поэтому
+    # NAT/DNS/защиты покрывают и эти подсети автоматически.
+    AZ3_IFACE=antizapret-awg3; AZ3_SUBNET="${az_base%.*}.$(( ${az_base##*.} + 2 ))"
+    VPN3_IFACE=vpn-awg3;       VPN3_SUBNET="${vpn_base%.*}.$(( ${vpn_base##*.} + 2 ))"
+    # у 3.0 транспортный паддинг S4 отъедает место — MTU ниже, чем у 2.0
+    MTU3=1380
 
     # порты: закреплённые (services.env) > CLI > рандом. Один раз выбранный порт
     # больше НИКОГДА не меняется молча — от него зависят все клиентские конфиги.
@@ -223,6 +300,21 @@ plan_services() {
     fi
     [ "$AZ_PORT" != "$VPN_PORT" ] || { err "Порты antizapret и vpn совпадают ($AZ_PORT)"; exit 2; }
 
+    # порты слоя 3.0 — тоже закрепляются один раз
+    local pinned_az3="" pinned_vpn3=""
+    if [ -f "$SERVICES" ]; then
+        pinned_az3="$(. "$SERVICES" 2>/dev/null; echo "${AZ3_PORT:-}")"
+        pinned_vpn3="$(. "$SERVICES" 2>/dev/null; echo "${VPN3_PORT:-}")"
+    fi
+    AZ3_PORT="${pinned_az3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT")}"
+    VPN3_PORT="${pinned_vpn3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT" "$AZ3_PORT")}"
+
+    # какие слои считаем установленными
+    case "$AWG_VER" in
+        2)    LAYER2=1; LAYER3=0 ;;
+        3)    LAYER2=0; LAYER3=1 ;;
+        *)    LAYER2=1; LAYER3=1 ;;
+    esac
     write_services
     log "Режим: parallel · подсети antizapret=$AZ_SUBNET.0/24 vpn=$VPN_SUBNET.0/24"
     log "Порты AmneziaWG: antizapret=$AZ_PORT vpn=$VPN_PORT (закреплены) · DNS=$SERVER_DNS"
@@ -244,7 +336,89 @@ VPN_SUBNET=$VPN_SUBNET
 VPN_DNS=$SERVER_DNS
 VPN_SPLIT=0
 MTU=$MTU
+# ── слой AmneziaWG 3.0 (userspace amneziawg-go) ──
+LAYER2=$LAYER2
+LAYER3=$LAYER3
+AZ3_IFACE=$AZ3_IFACE
+AZ3_PORT=$AZ3_PORT
+AZ3_SUBNET=$AZ3_SUBNET
+AZ3_DNS=$SERVER_DNS
+AZ3_SPLIT=1
+VPN3_IFACE=$VPN3_IFACE
+VPN3_PORT=$VPN3_PORT
+VPN3_SUBNET=$VPN3_SUBNET
+VPN3_DNS=$SERVER_DNS
+VPN3_SPLIT=0
+MTU3=$MTU3
 EOF
+}
+
+# ── слой 3.0: интерфейсы, профиль обфускации, юниты ─────────────────────────
+# Ключ сервера наследуется из своего же конфига, как и у слоя 2.0, — чтобы
+# переустановка не выбивала уже розданных клиентов.
+build_iface3() {
+    local name="$1" subnet="$2" port="$3"
+    local conf="$AWG_DIR/${name}.conf" priv="" peers=""
+    _extract_key3() { grep '^PrivateKey' "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \t'; }
+    _valid_key3()   { [ -n "$1" ] && printf '%s' "$1" | awg pubkey >/dev/null 2>&1; }
+    if [ -f "$conf" ]; then
+        priv="$(_extract_key3 "$conf")"
+        peers="$(awk '/^\[Peer\]/{p=1} p{print}' "$conf")"
+    fi
+    if _valid_key3 "$priv"; then
+        log "Интерфейс $name: ключ сервера сохранён"
+    else
+        priv="$(awg genkey)"
+        log "Интерфейс $name: сгенерирован новый ключ"
+    fi
+    umask 077
+    {
+        echo "# AntiZapret-AWG — серверный интерфейс $name (слой 3.0)"
+        echo "# Параметры 3.0 лежат отдельно в ${name}.v3: awg setconf их не понимает."
+        echo "[Interface]"
+        echo "PrivateKey = $priv"
+        echo "Address = ${subnet}.1/24"
+        echo "ListenPort = $port"
+        echo "MTU = $MTU3"
+        echo "__AWG3_OBFUSCATION__"
+        [ -n "$peers" ] && { echo; printf '%s\n' "$peers"; }
+    } > "$conf"
+    chmod 600 "$conf"
+    # параметры интерфейса для датапаса. NAT=0: за него отвечает AntiZapret,
+    # свой MASQUERADE дал бы двойной NAT
+    {
+        echo "SUBNET=${subnet}.0/24"
+        echo "PORT=$port"
+        echo "NAT=0"
+        echo "DNS=$SERVER_DNS"
+    } > "$AWG_DIR/${name}.env"
+    chmod 600 "$AWG_DIR/${name}.env"
+}
+
+build_interfaces3() {
+    build_iface3 "$AZ3_IFACE"  "$AZ3_SUBNET"  "$AZ3_PORT"
+    build_iface3 "$VPN3_IFACE" "$VPN3_SUBNET" "$VPN3_PORT"
+}
+
+gen_obfuscation3() {
+    log "Профиль обфускации 3.0: preset=$PRESET template=${TEMPLATE:-default}"
+    AWG3_AZ_CONF="$AWG_DIR/${AZ3_IFACE}.conf" AWG3_VPN_CONF="$AWG_DIR/${VPN3_IFACE}.conf" \
+        "$DEST/awg-obfuscation.sh" --v3 --preset "$PRESET" ${TEMPLATE:+--template "$TEMPLATE"} \
+        --fp "$FP" --mtu "$MTU3" ${HOST:+--host "$HOST"} --apply
+}
+
+switch_services3() {
+    cp "$OVERLAY/systemd/awg3@.service" /etc/systemd/system/awg3@.service
+    systemctl daemon-reload
+    systemctl enable "awg3@${AZ3_IFACE}" "awg3@${VPN3_IFACE}" >/dev/null 2>&1 || true
+    local i
+    for i in "$AZ3_IFACE" "$VPN3_IFACE"; do
+        systemctl stop "awg3@$i" 2>/dev/null || true
+        ip link del "$i" 2>/dev/null || true
+    done
+    systemctl start "awg3@${AZ3_IFACE}" "awg3@${VPN3_IFACE}" || \
+        err "слой 3.0 не стартовал — journalctl -u awg3@${AZ3_IFACE}"
+    log "Слой 3.0 поднят: $AZ3_IFACE (порт $AZ3_PORT), $VPN3_IFACE (порт $VPN3_PORT)"
 }
 
 # внешний хост (домен/IP) для Endpoint клиентов
@@ -483,21 +657,39 @@ main() {
             exit 1
         fi
     fi
-    log "Слой AmneziaWG 2.0 поверх AntiZapret (parallel: ваниль не трогается)"
-    install_awg
+    log "Слой AmneziaWG поверх AntiZapret (parallel: ваниль не трогается), версии: $AWG_VER"
+    # kernel-модуль нужен только слою 2.0; для чистого 3.0 его не ставим
+    case "$AWG_VER" in
+        2|both) install_awg ;;
+        3)      apt-get install -y -qq amneziawg-tools >/dev/null 2>&1 || install_awg ;;
+    esac
+    case "$AWG_VER" in 3|both) install_awg3 ;; esac
     deploy_overlay
     plan_services
     resolve_host
-    build_interfaces
-    gen_obfuscation
-    switch_services
+
+    if [ "$LAYER2" = 1 ]; then
+        build_interfaces
+        gen_obfuscation
+        switch_services
+    fi
+    if [ "$LAYER3" = 1 ]; then
+        build_interfaces3
+        gen_obfuscation3
+        switch_services3
+    fi
+
     # синхронизируем существующих клиентов с текущим профилем обфускации
     # (у сервера и клиентов S/H/I обязаны совпадать, иначе не будет handshake)
     "$DEST/client-awg.sh" regen-all 2>/dev/null || true
     echo
     log "Готово. Клиенты:"
-    log "  awg-client add myphone antizapret   # split-routing (только блокировки → сервер)"
-    log "  awg-client add laptop vpn           # полный туннель"
-    log "Проверка: awg show — есть handshake и растёт transfer? трафик идёт?"
+    [ "$LAYER2" = 1 ] && {
+        log "  awg-client add myphone antizapret    # 2.0, split-routing"
+        log "  awg-client add laptop  vpn           # 2.0, полный туннель"; }
+    [ "$LAYER3" = 1 ] && {
+        log "  awg-client add myphone antizapret3   # 3.0, split-routing"
+        log "  awg-client add laptop  vpn3          # 3.0, полный туннель"; }
+    log "Проверка связности: awg-doctor"
 }
 main
