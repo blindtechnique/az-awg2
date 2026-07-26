@@ -20,9 +20,19 @@ SERVICES=/etc/amnezia/amneziawg/services.env
 . "$SERVICES" 2>/dev/null || true
 case "${MODE:-replace}" in parallel|keep) ;; *) exit 0 ;; esac   # свои подсети → нужен view
 
-out="$(python3 - "$KRESD" "${AZ_SUBNET:-10.29.9}" "${VPN_SUBNET:-10.28.9}" <<'PY' 2>/dev/null || true
+# Подсети слоя 3.0 (третий октет +2) — им нужен такой же view, иначе клиенты
+# 3.0 получат неверный ответ на имя сервера. Передаём их дополнительными
+# аргументами; если слой не установлен, список просто короче.
+SUBNETS="${AZ_SUBNET:-10.29.9} ${VPN_SUBNET:-10.28.9}"
+if [ "${LAYER3:-0}" = 1 ]; then
+    SUBNETS="$SUBNETS ${AZ3_SUBNET:-10.29.10} ${VPN3_SUBNET:-10.28.10}"
+fi
+
+# shellcheck disable=SC2086
+out="$(python3 - "$KRESD" $SUBNETS <<'PY' 2>/dev/null || true
 import re, sys
-path, az, vpn = sys.argv[1], sys.argv[2], sys.argv[3]
+path = sys.argv[1]
+subnets = sys.argv[2:]
 lines = open(path).read().splitlines(keepends=True)
 
 def add_view(lines, subnet):
@@ -43,7 +53,7 @@ def add_view(lines, subnet):
     return lines[:idx + 1] + [view] + lines[idx + 1:], True
 
 changed = False
-for s in (az, vpn):
+for s in subnets:
     lines, r = add_view(lines, s)
     changed = changed or bool(r)
 if changed:

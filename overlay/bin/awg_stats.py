@@ -443,6 +443,11 @@ def dt(ts: int) -> str:
         return "—"
 
 
+# как подписывать слой клиента в карточке
+LAYER_TITLE = {"vanilla": "стоковый WG", "awg2": "AmneziaWG 2.0",
+               "awg3": "AmneziaWG 3.0", "openvpn": "OpenVPN"}
+
+
 def client(name: str, origin: str = None) -> str:
     init_db()
     now = int(time.time())
@@ -458,7 +463,7 @@ def client(name: str, origin: str = None) -> str:
             # не подключался — тогда его нет в БД статистики
             for pk2, (nm, ifc, org2) in load_names().items():
                 if nm == name and (origin is None or org2 == origin):
-                    layer2 = "стоковый WG" if org2 == "vanilla" else "AmneziaWG 2.0"
+                    layer2 = LAYER_TITLE.get(org2, "AmneziaWG 2.0")
                     return (f"📊 <b>{name}</b> [{ifc} · {layer2}] ⚪️\n"
                             "Клиент создан, но ещё ни разу не подключался —\n"
                             "статистика появится после первого handshake.")
@@ -468,7 +473,7 @@ def client(name: str, origin: str = None) -> str:
                          FROM totals WHERE pubkey=?""", (pk,)).fetchone() or (0, 0, 0, "")
         is_on = t[2] and (now - t[2]) < ONLINE_WINDOW
         cur_ip = (t[3] or "").rsplit(":", 1)[0].strip("[]")
-        layer = "стоковый WG" if org == "vanilla" else "AmneziaWG 2.0"
+        layer = LAYER_TITLE.get(org, "AmneziaWG 2.0")
         out = [f"📊 <b>{name}</b> [{iface} · {layer}] {'🟢 онлайн' if is_on else '⚪️ офлайн'}",
                f"Последняя активность: {dt(t[2])} ({ago(t[2])})",
                f"Всего трафика: ↓{human(t[0])} ↑{human(t[1])} (Σ {human(t[0]+t[1])})"]

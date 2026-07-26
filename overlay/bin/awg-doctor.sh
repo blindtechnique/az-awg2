@@ -34,7 +34,9 @@ declare -a REPORT=()
 ok()   { REPORT+=("OK|$1"); [ "$JSON" = 1 ] || printf '  \033[1;32m✓\033[0m %s\n' "$1"; }
 bad()  { REPORT+=("FAIL|$1"); PROBLEMS=$((PROBLEMS+1)); [ "$JSON" = 1 ] || printf '  \033[1;31m✗\033[0m %s\n' "$1"; }
 warn() { REPORT+=("WARN|$1"); [ "$JSON" = 1 ] || printf '  \033[1;33m!\033[0m %s\n' "$1"; }
-head_() { [ "$JSON" = 1 ] || printf '\n\033[1m%s\033[0m\n' "$1"; }
+# заголовок секции попадает и в JSON: бот рисует по нему структуру,
+# иначе в чат приезжает плоская простыня без разделов
+head_() { REPORT+=("SECTION|$1"); [ "$JSON" = 1 ] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 [ -f "$SERVICES" ] || { echo "Слой не установлен: нет $SERVICES" >&2; exit 3; }
 # shellcheck disable=SC1090
