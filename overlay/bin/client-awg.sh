@@ -137,7 +137,9 @@ add_client() {
         # AllowedIPs = своя подсеть + сам knot/32 (для keep-режима) + forward-подсети
         # AntiZapret (/etc/wireguard/ips) — ОСНОВА обхода блокировок
         dns="${DNS_SRV:-${SUBNET}.1}"
-        allowed="${SUBNET}.0/24, ${dns}/32$(cat /etc/wireguard/ips 2>/dev/null)"
+        # `|| true`: без файла ips подстановка вернула бы 1, и под set -e скрипт
+        # умер бы молча, без единой строки в выводе — искать такое потом больно
+        allowed="${SUBNET}.0/24, ${dns}/32$(cat /etc/wireguard/ips 2>/dev/null || true)"
     else
         # полный туннель: внутренний DNS сервера (стабильный, не зависит от смены
         # публичного IP); ::/0 добавлен чтобы IPv6 не утекал мимо туннеля
@@ -298,19 +300,22 @@ expire_check() {
 
 case "${1:-}" in
     add)
-        [ $# -ge 2 ] || die "Укажи имя: add <name> [antizapret|vpn] [--ttl 2h]"
+        [ $# -ge 2 ] || die "Укажи имя: add <name> [antizapret|vpn|antizapret3|vpn3] [--ttl 2h]"
         name="$2"; svc="antizapret"; ttl=""
         shift 2
         while [ $# -gt 0 ]; do
             case "$1" in
                 --ttl) ttl="$2"; shift 2 ;;
-                antizapret|vpn) svc="$1"; shift ;;
-                *) shift ;;
+                antizapret|vpn|antizapret3|vpn3) svc="$1"; shift ;;
+                # Раньше здесь стоял молчаливый `*) shift`, и любое незнакомое
+                # слово просто выбрасывалось: запрос на antizapret3 тихо создавал
+                # клиента 2.0 в другом каталоге. Теперь — явная ошибка.
+                *) die "Неизвестный аргумент '$1'. Сервисы: antizapret|vpn|antizapret3|vpn3, срок: --ttl 2h" ;;
             esac
         done
         add_client "$name" "$svc" "$ttl" ;;
     del)
-        [ $# -ge 2 ] || die "Укажи имя: del <name> [antizapret|vpn]"
+        [ $# -ge 2 ] || die "Укажи имя: del <name> [antizapret|vpn|antizapret3|vpn3]"
         del_client "$2" "${3:-antizapret}"
         # вычистить из expiry
         [ -f "$EXPIRY_FILE" ] && grep -vP "^$2\t${3:-antizapret}\t" "$EXPIRY_FILE" > "${EXPIRY_FILE}.tmp" 2>/dev/null \

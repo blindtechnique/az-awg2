@@ -163,6 +163,13 @@ def build_amnezia_json(conf: dict, name: str) -> dict:
         "S1": last_config["S1"], "S2": last_config["S2"],
         "last_config": json.dumps(last_config, ensure_ascii=False),
         "mtu": str(mtu), "port": port, "transport_proto": "udp",
+        # Метка «конфиг не от мастера установки Amnezia, а свой». Без неё
+        # приложение подписывает сервер как «AmneziaWG Legacy»: в
+        # serverDescription.cpp имя контейнера меняется на Legacy ровно при
+        # условии «контейнер amnezia-awg И isThirdPartyConfig == false».
+        # Сам импорт .conf в приложении выставляет этот флаг точно так же
+        # (importController.cpp), так что мы просто повторяем его поведение.
+        "isThirdPartyConfig": True,
     }
     if protocol_version:
         awg_container["protocol_version"] = protocol_version

@@ -99,9 +99,15 @@ def check(conf_path: str) -> list:
     # версия протокола
     pv = awg.get("protocol_version")
     if not pv:
-        problems.append("нет protocol_version — приложение покажет «AmneziaWG Legacy»")
+        problems.append("нет protocol_version — приложение не покажет версию протокола")
     elif pv not in ("1.5", "2"):
         problems.append(f"protocol_version={pv!r} — приложение знает только 1.5 и 2")
+
+    # без этого флага сервер подписывается как «AmneziaWG Legacy»
+    # (serverDescription.cpp: контейнер amnezia-awg + isThirdPartyConfig == false)
+    if not awg.get("isThirdPartyConfig"):
+        problems.append("нет isThirdPartyConfig — приложение подпишет сервер "
+                        "как «AmneziaWG Legacy»")
 
     # копия hasSplitTunnelingFromAllowedIps из клиента
     allowed = lc.get("allowed_ips") or []
