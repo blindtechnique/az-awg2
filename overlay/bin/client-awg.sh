@@ -170,9 +170,17 @@ EOF
 
     log "Клиент '$name' ($svc)${expiry_note} создан:"
     log "  conf : $conf"
-    log "  QR   : ${outdir}/${svc}-${name}.png        (AmneziaWG native / WireGuard)"
-    log "  URI  : ${outdir}/${svc}-${name}.vpn        (Amnezia VPN app)"
-    log "  QR-URI: ${outdir}/${svc}-${name}-vpn.png"
+    if [ -f "${outdir}/${svc}-${name}.png" ]; then
+        log "  QR   : ${outdir}/${svc}-${name}.png        (AmneziaWG native / WireGuard)"
+    else
+        log "  QR   : (пропущен — conf слишком большой для QR)"
+    fi
+    if [ -f "${outdir}/${svc}-${name}.vpn" ]; then
+        log "  URI  : ${outdir}/${svc}-${name}.vpn        (Amnezia VPN app)"
+    fi
+    if [ -f "${outdir}/${svc}-${name}-vpn.png" ]; then
+        log "  QR-URI: ${outdir}/${svc}-${name}-vpn.png"
+    fi
     echo "$conf"
 }
 
