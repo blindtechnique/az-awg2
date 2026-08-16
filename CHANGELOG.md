@@ -2,6 +2,12 @@
 
 Все заметные изменения проекта. Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — по [SemVer](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Исправлено
+
+- `awg-export.py` больше не падает с `DataOverflowError`, когда AntiZapret split-конфиг (длинный `AllowedIPs` из `/etc/wireguard/ips`) не влезает в QR. Сырой `.conf`-QR и/или `vpn://`-QR пропускаются с предупреждением в stderr, а `.conf` и файл `vpn://` всё равно создаются — создание клиента через `awg-client add` / админ-панель не обрывается на 500. `client-awg.sh` логирует QR только если файл реально появился.
+
 ## [2.1.1] — 2026-07-26
 
 ### Исправлено

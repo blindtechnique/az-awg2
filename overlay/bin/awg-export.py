@@ -68,17 +68,69 @@ def host_port(endpoint: str):
 
 # ── QR ───────────────────────────────────────────────────────────────────────
 
-def write_qr(payload: str, path: str, scale: int = 6):
-    """Записать QR-код PNG. Предпочитаем segno (без Pillow)."""
+def write_qr(payload: str, path: str, scale: int = 6) -> bool:
+    """Записать QR-код PNG. Предпочитаем segno (без Pillow).
+
+    Возвращает False, если payload не влезает ни в один QR (типично для
+    AntiZapret split-конфигов с огромным AllowedIPs). Вызывающий код должен
+    продолжить без PNG и не ронять создание клиента.
+    """
+    # От меньшего ECC к большему: длинные payload сначала пытаемся вместить.
+    ecc_levels = ("l", "m", "q", "h")
     try:
         import segno
-        segno.make(payload, error="m").save(path, scale=scale, border=2)
-        return
+        from segno.encoder import DataOverflowError as SegnoOverflow
     except ImportError:
-        pass
-    import qrcode
-    img = qrcode.make(payload)
-    img.save(path)
+        segno = None
+    else:
+        last_err = None
+        for ecc in ecc_levels:
+            try:
+                segno.make(payload, error=ecc).save(path, scale=scale, border=2)
+                return True
+            except SegnoOverflow as exc:
+                last_err = exc
+        print(
+            "[qr] skip %s: data too large for QR (%d chars)%s"
+            % (path, len(payload), (": %s" % last_err) if last_err else ""),
+            file=sys.stderr,
+        )
+        return False
+
+    try:
+        import qrcode
+        from qrcode.exceptions import DataOverflowError as QrOverflow
+    except ImportError:
+        print("[qr] skip %s: no segno/qrcode installed" % path, file=sys.stderr)
+        return False
+
+    correction = (
+        getattr(qrcode.constants, "ERROR_CORRECT_L", 1),
+        getattr(qrcode.constants, "ERROR_CORRECT_M", 0),
+        getattr(qrcode.constants, "ERROR_CORRECT_Q", 3),
+        getattr(qrcode.constants, "ERROR_CORRECT_H", 2),
+    )
+    last_err = None
+    for level in correction:
+        try:
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=level,
+                box_size=scale,
+                border=2,
+            )
+            qr.add_data(payload)
+            qr.make(fit=True)
+            qr.make_image(fill_color="black", back_color="white").save(path)
+            return True
+        except (QrOverflow, ValueError) as exc:
+            last_err = exc
+    print(
+        "[qr] skip %s: data too large for QR (%d chars)%s"
+        % (path, len(payload), (": %s" % last_err) if last_err else ""),
+        file=sys.stderr,
+    )
+    return False
 
 
 # ── vpn:// (Amnezia VPN app) ─────────────────────────────────────────────────
@@ -199,15 +251,27 @@ def main():
     do_uri = args.vpn_uri or args.all
 
     if do_qr:
-        write_qr(text, base + ".png")
-        print(f"[qr]  {base}.png  (сырой .conf — AmneziaWG native / WireGuard)")
+        qr_path = base + ".png"
+        if write_qr(text, qr_path):
+            print(f"[qr]  {qr_path}  (сырой .conf — AmneziaWG native / WireGuard)")
+        else:
+            print(
+                "[qr]  skipped (conf too large for QR — use .conf / vpn:// download)",
+                file=sys.stderr,
+            )
 
     if do_uri:
         uri = build_vpn_uri(conf, name)
         with open(base + ".vpn", "w", encoding="utf-8") as f:
             f.write(uri + "\n")
-        write_qr(uri, base + "-vpn.png")
-        print(f"[uri] {base}.vpn  +  {base}-vpn.png  (Amnezia VPN app)")
+        vpn_qr = base + "-vpn.png"
+        if write_qr(uri, vpn_qr):
+            print(f"[uri] {base}.vpn  +  {vpn_qr}  (Amnezia VPN app)")
+        else:
+            print(
+                f"[uri] {base}.vpn  (vpn:// QR skipped — payload too large)",
+                file=sys.stderr,
+            )
         if args.print_uri:
             print(uri)
 
