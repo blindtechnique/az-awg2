@@ -152,7 +152,12 @@ AllowedIPs = ${cip}/32
 EOF
 
     # QR (сырой conf) + vpn:// URI + QR URI
-    python3 "$EXPORT" "$conf" --name "${svc}-${name}" --outdir "$outdir" --all >/dev/null
+    # `|| log` обязателен: экспортёр возвращает 3, когда в системе нет ни segno,
+    # ни qrcode. Клиент при этом создан полностью (.conf и vpn:// на месте), но
+    # под `set -euo pipefail` ненулевой код убил бы add_client ровно здесь —
+    # уже после того, как peer прописан и в рантайме, и в серверном конфиге.
+    python3 "$EXPORT" "$conf" --name "${svc}-${name}" --outdir "$outdir" --all >/dev/null \
+        || log "экспортёр: QR не собран (см. предупреждение выше) — .conf и vpn:// на месте"
 
     # временный клиент: записать срок удаления
     local expiry_note=""
@@ -173,7 +178,7 @@ EOF
     if [ -f "${outdir}/${svc}-${name}.png" ]; then
         log "  QR   : ${outdir}/${svc}-${name}.png        (AmneziaWG native / WireGuard)"
     else
-        log "  QR   : (пропущен — conf слишком большой для QR)"
+        log "  QR   : (не создан — см. предупреждение экспортёра выше)"
     fi
     if [ -f "${outdir}/${svc}-${name}.vpn" ]; then
         log "  URI  : ${outdir}/${svc}-${name}.vpn        (Amnezia VPN app)"
@@ -241,7 +246,8 @@ for line in txt:
 open(path,"w",encoding="utf-8").write("\n".join(out)+"\n")
 PY
             python3 "$EXPORT" "$conf" --name "${svc}-${name}" \
-                --outdir "$(dirname "$conf")" --all >/dev/null
+                --outdir "$(dirname "$conf")" --all >/dev/null \
+                || log "  QR не собран для $svc/$name (см. предупреждение выше)"
             log "Пересоздан: $svc/$name"
         done
     done
