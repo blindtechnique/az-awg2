@@ -2,7 +2,7 @@
 
 Все заметные изменения проекта. Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — по [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [2.1.2] — 2026-08-16
 
 ### Исправлено
 
