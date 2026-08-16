@@ -72,17 +72,92 @@ def host_port(endpoint: str):
 
 # ── QR ───────────────────────────────────────────────────────────────────────
 
-def write_qr(payload: str, path: str, scale: int = 6):
-    """Записать QR-код PNG. Предпочитаем segno (без Pillow)."""
+class QrUnavailable(RuntimeError):
+    """Нет ни segno, ни qrcode — ошибка окружения, а не переполнение QR."""
+
+
+def write_qr(payload: str, path: str, scale: int = 6) -> bool:
+    """Записать QR-код PNG. Предпочитаем segno (без Pillow).
+
+    True  — PNG создан.
+    False — payload не влезает ни в один QR. Штатный случай для AntiZapret
+            split-конфига: AllowedIPs собирается из /etc/wireguard/ips и весит
+            десятки КБ при потолке QR ~2953 байта. Вызывающий продолжает без PNG.
+    QrUnavailable — библиотек QR нет вообще. Показывать это пользователю как
+            «конфиг слишком большой» нельзя: причина другая и лечится иначе.
+    """
+    tmp = path + ".tmp"
+
+    def _cleanup():
+        # Устаревший PNG обязательно снести. regen_all() и _rewrite_client_confs
+        # перегенерируют конфиги БЕЗ rm, а признаком свежести и в client-awg.sh
+        # (`[ -f ]`), и в боте (os.path.exists) служит само наличие файла: без
+        # удаления пользователю уедет QR с прошлыми ключами обфускации и прошлым
+        # портом. Туннель не встанет, а в логах всё будет выглядеть успешным.
+        for p in (tmp, path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    def _overflow() -> bool:
+        _cleanup()
+        print("[qr] пропуск %s: не влезает в QR (%d символов)" % (path, len(payload)),
+              file=sys.stderr)
+        return False
+
     try:
         import segno
-        segno.make(payload, error="m").save(path, scale=scale, border=2)
-        return
     except ImportError:
-        pass
-    import qrcode
-    img = qrcode.make(payload)
-    img.save(path)
+        segno = None
+    else:
+        # Порядок ECC только m→l. Ёмкость максимальна у самого слабого уровня
+        # (версия 40: L=2953, M=2331, Q=1663, H=1273), поэтому «не влезло при l»
+        # означает, что не влезет и при m/q/h — перебор в обратную сторону
+        # никогда не срабатывает. m первым, чтобы у обычных конфигов не
+        # проседала надёжность сканирования: при boost_error (segno включает его
+        # сам) уровень — это МИНИМУМ, и на свободном символе segno его поднимет.
+        for ecc in ("m", "l"):
+            try:
+                # kind обязателен: формат segno берёт из расширения, а у времен-
+                # ного файла оно «.tmp» — без явного указания падает на любом,
+                # даже совсем коротком конфиге.
+                segno.make(payload, error=ecc).save(tmp, kind="png",
+                                                    scale=scale, border=2)
+            except segno.DataOverflowError:
+                continue
+            os.replace(tmp, path)
+            return True
+        return _overflow()
+
+    try:
+        import qrcode
+        from qrcode.exceptions import DataOverflowError as QrOverflow
+    except ImportError:
+        _cleanup()
+        raise QrUnavailable("не установлены ни segno, ни qrcode")
+
+    # box_size/border как у qrcode.make() — геометрию печати не меняем.
+    for level in (qrcode.constants.ERROR_CORRECT_M, qrcode.constants.ERROR_CORRECT_L):
+        qr = qrcode.QRCode(version=None, error_correction=level,
+                           box_size=10, border=4)
+        try:
+            qr.add_data(payload)
+            qr.make(fit=True)
+        # Переполнение qrcode сообщает двумя способами: DataOverflowError и —
+        # начиная с подбора версии в make(fit=True) — голым ValueError
+        # «Invalid version (was 41, expected 1 to 40)». Ловим оба, но ТОЛЬКО
+        # вокруг подбора: точно такой же ValueError умеет бросать PIL на записи,
+        # причём уже ПОСЛЕ создания файла, и глушить его нельзя — иначе на диске
+        # молча останется битый нулевой .png.
+        except (QrOverflow, ValueError):
+            continue
+        # format по той же причине, что kind у segno: расширение «.tmp» для
+        # PIL ничего не значит.
+        qr.make_image(fill_color="black", back_color="white").save(tmp, format="PNG")
+        os.replace(tmp, path)
+        return True
+    return _overflow()
 
 
 # ── vpn:// (Amnezia VPN app) ─────────────────────────────────────────────────
@@ -226,23 +301,47 @@ def main():
 
     do_qr = args.qr_conf or args.all
     do_uri = args.vpn_uri or args.all
+    qr_missing = False
 
     if do_qr:
-        write_qr(text, base + ".png")
-        print(f"[qr]  {base}.png  (сырой .conf — AmneziaWG native / WireGuard)")
+        qr_path = base + ".png"
+        try:
+            ok = write_qr(text, qr_path)
+        except QrUnavailable as exc:
+            qr_missing, ok = True, False
+            print("[qr]  ОШИБКА окружения: %s" % exc, file=sys.stderr)
+        if ok:
+            print(f"[qr]  {qr_path}  (сырой .conf — AmneziaWG native / WireGuard)")
+        elif not qr_missing:
+            print("[qr]  пропущен: conf не влезает в QR — используйте .conf / vpn://",
+                  file=sys.stderr)
 
     if do_uri:
         uri = build_vpn_uri(conf, name)
         with open(base + ".vpn", "w", encoding="utf-8") as f:
             f.write(uri + "\n")
-        write_qr(uri, base + "-vpn.png")
-        print(f"[uri] {base}.vpn  +  {base}-vpn.png  (Amnezia VPN app)")
+        vpn_qr = base + "-vpn.png"
+        try:
+            ok = write_qr(uri, vpn_qr)
+        except QrUnavailable as exc:
+            qr_missing, ok = True, False
+            print("[uri] ОШИБКА окружения: %s" % exc, file=sys.stderr)
+        if ok:
+            print(f"[uri] {base}.vpn  +  {vpn_qr}  (Amnezia VPN app)")
+        else:
+            print(f"[uri] {base}.vpn  (QR для vpn:// пропущен)", file=sys.stderr)
         if args.print_uri:
             print(uri)
 
     if not (do_qr or do_uri):
         print("Укажи --qr-conf / --vpn-uri / --all", file=sys.stderr)
         sys.exit(2)
+
+    # .conf и .vpn уже на диске — клиент НЕ полусоздан, поэтому вызывающему коду
+    # умирать нельзя. Но код возврата обязан быть ненулевым: на нём висят фолбэк
+    # run_export() на системный python3 и подсказка «pip install segno» в боте.
+    if qr_missing:
+        sys.exit(3)
 
 
 if __name__ == "__main__":

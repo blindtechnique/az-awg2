@@ -525,9 +525,17 @@ async def send_awg_files(chat: int, svc: str, name: str):
     if os.path.exists(conf):
         await bot.send_document(chat, FSInputFile(conf, filename=f"{name}.conf"),
                                 caption=f"📄 {svc}/{name} — AmneziaWG")
-    if os.path.exists(qr):
+    # getsize > 0 — страховка от битого нулевого PNG: send_photo на пустом файле
+    # роняет хендлер целиком, и пользователь остаётся с «⏳ Создаю…» навсегда.
+    if os.path.exists(qr) and os.path.getsize(qr) > 0:
         await bot.send_photo(chat, FSInputFile(qr),
                              caption="📱 QR — отсканируй в приложении AmneziaWG")
+    else:
+        # Молча пропасть QR не должен: экспортёр теперь не падает на слишком
+        # длинном конфиге, а просто не делает картинку — объясняем, что дальше.
+        await bot.send_message(
+            chat, "ℹ️ QR не сгенерирован: конфиг не влезает в QR-код. "
+                  "Импортируй файл .conf или ссылку vpn:// ниже.")
     if os.path.exists(vpn):
         uri = open(vpn, encoding="utf-8").read().strip()
         await bot.send_message(chat, "🔗 <b>Ссылка vpn:// для приложения Amnezia</b>:",
@@ -595,9 +603,13 @@ async def send_vanilla_wg_files(chat: int, name: str):
                 chat, f"⚠️ {label}: QR/URI не сгенерированы. {hint}\n"
                       f"<code>{html.escape(elog[-500:])}</code>", parse_mode="HTML")
             continue
-        if os.path.exists(qr):
+        if os.path.exists(qr) and os.path.getsize(qr) > 0:
             await bot.send_photo(chat, FSInputFile(qr),
                                  caption=f"📱 {label}: QR для AmneziaWG")
+        else:
+            await bot.send_message(
+                chat, f"ℹ️ {label}: QR не сгенерирован — конфиг не влезает в "
+                      f"QR-код. Используй файл .conf или ссылку vpn:// ниже.")
         if os.path.exists(vpn):
             uri = open(vpn, encoding="utf-8").read().strip()
             await bot.send_message(chat, f"🔗 <b>{label} — ссылка vpn://</b> (Amnezia):",
