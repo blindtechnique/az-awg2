@@ -47,19 +47,28 @@ add_row() {  # add_row <что> <установлено> <доступно> <е�
 
 # ── amneziawg-go: только если стоит слой 3.0 ────────────────────────────────
 if command -v amneziawg-go >/dev/null 2>&1; then
+    # Сравниваем с ПИНОМ установщика, а не с последним тегом апстрима. Проект
+    # намеренно держится серии 3.0, апстрим ушёл на 3.1 — при сравнении с
+    # последним тегом «есть обновление» горело бы вечно: бот слал бы
+    # уведомления, --update ничего бы не менял, и так по кругу.
+    # Значение обязано совпадать с AWG_GO_REF в patches/antizapret-awg-integration.sh.
+    PIN_GO="${AWG_GO_REF:-v3.0.20260805}"
     cur="$(installed_go_ref)"; [ -n "$cur" ] || cur="(неизвестно)"
+    if [ "$cur" != "$PIN_GO" ]; then add_row "amneziawg-go" "$cur" "$PIN_GO" 1
+    else add_row "amneziawg-go" "$cur" "$PIN_GO" 0; fi
     new="$(latest_tag amnezia-vpn/amneziawg-go)"
-    if [ -n "$new" ] && [ "$new" != "$cur" ]; then add_row "amneziawg-go" "$cur" "$new" 1
-    else add_row "amneziawg-go" "$cur" "${new:-?}" 0; fi
+    [ -n "$new" ] && [ "$new" != "$PIN_GO" ] && \
+        UPSTREAM_NOTE="апстрим выпустил amneziawg-go $new (проект пиннится на $PIN_GO — см. README)"
 fi
 
-# ── amneziawg-tools: ставится пакетом, сравниваем с тегом апстрима ──────────
+# ── amneziawg-tools: ставятся пакетом из PPA, проектом не пиннятся ─────────
+# Показываем справочно, без флага «есть обновление»: обновлять их отдельно от
+# ванильного AntiZapret нельзя, а пометка заставляла бы запускать --update,
+# который на них всё равно не влияет.
 if command -v awg >/dev/null 2>&1; then
-    cur="$(awg --version 2>&1 | grep -oE 'v[0-9][0-9.]*' | head -1)"
+    cur="$(awg --version 2>&1 | grep -oE 'v[0-9][0-9.]*(-[0-9]+)?' | head -1 || true)"
     [ -n "$cur" ] || cur="(пакет)"
-    new="$(latest_tag amnezia-vpn/amneziawg-tools)"
-    if [ -n "$new" ] && [ "$new" != "$cur" ]; then add_row "amneziawg-tools" "$cur" "$new" 1
-    else add_row "amneziawg-tools" "$cur" "${new:-?}" 0; fi
+    add_row "amneziawg-tools" "$cur" "$cur" 0
 fi
 
 # ── код слоя ────────────────────────────────────────────────────────────────
@@ -95,6 +104,11 @@ elif [ "$QUIET" = 0 ]; then
     else
         echo "Обновить код слоя:  bash install.sh --update"
         echo "(конфиги, порты и клиенты при этом не меняются)"
+    fi
+    if [ -n "${UPSTREAM_NOTE:-}" ]; then
+        echo
+        echo "ℹ️  $UPSTREAM_NOTE"
+        echo "   Это справка, а не повод обновляться: пин меняется вместе с кодом слоя."
     fi
 fi
 

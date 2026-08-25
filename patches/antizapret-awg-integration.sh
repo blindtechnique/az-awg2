@@ -28,8 +28,15 @@ UPDATE=0; MIGRATE=0; CLI_AZ_PORT=""; CLI_VPN_PORT=""
 # какие версии протокола поднимать: 2 | 3 | both
 AWG_VER="both"
 # версии апстрима для слоя 3.0 (переопределяются переменными окружения)
-AWG_GO_REF="${AWG_GO_REF:-v3.0.1}"
-AWG_TOOLS_REF="${AWG_TOOLS_REF:-v1.0.20260618-2}"
+# Последний тег серии 3.0. На 3.1 (RandomTrailers, DisableCookies) сознательно
+# не идём: kernel-модуль issue #215 и amnezia-client issue #3043 — обе «хендшейк
+# проходит, трафика нет», обе открыты без ответа мейнтейнеров, и #3043 прямо
+# сообщает, что userspace 3.1 и kernel-модуль 3.1 ведут себя одинаково.
+AWG_GO_REF="${AWG_GO_REF:-v3.0.20260805}"
+# AWG_TOOLS_REF здесь больше нет: утилиты awg/awg-quick слой 2.0 берёт из PPA
+# (install_awg), а слой 3.0 общается с датапасом через UAPI-сокет и от версии
+# утилит не зависит. Переменная объявлялась, но не использовалась нигде —
+# читатель считал, что версия зафиксирована, хотя это было не так.
 SRC=/opt/src
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -147,13 +154,28 @@ EOF
 }
 
 # ── 1b. amneziawg-go для слоя 3.0 ────────────────────────────────────────────
-# Kernel-модуль знает параметры только до 2.0 — в нём нет header protection,
-# content padding и таймингов. Поэтому 3.0 работает исключительно на userspace
-# демоне, который приходится собирать из исходников: готовых пакетов нет.
+# Параметры 3.0 kernel-модуль уже знает — апстрим влил их в master 30.07.2026
+# (PR #192). Но переезд отложен: на модуле открыты регрессии #215 и
+# amnezia-client #3043, «хендшейк проходит, трафика нет». Поэтому 3.0 работает
+# на userspace-демоне, который приходится собирать из исходников: пакетов нет.
 # Слою 2.0 это никак не мешает — он остаётся на модуле.
 install_awg3() {
-    command -v amneziawg-go >/dev/null 2>&1 && command -v awg >/dev/null 2>&1 && {
-        log "amneziawg-go уже собран"; return 0; }
+    # Раньше здесь стояла проверка «бинарник на месте — выходим», без сверки
+    # версии. Из-за неё пин AWG_GO_REF не действовал ни на одном установленном
+    # сервере: awg-upstream-check сообщал о новой версии, обновление молча
+    # ничего не делало, и уведомление приходило снова. Сверяем ревизию
+    # исходников — она надёжнее строки версии и уже так используется в
+    # overlay/bin/awg-upstream-check.sh.
+    if command -v amneziawg-go >/dev/null 2>&1 && command -v awg >/dev/null 2>&1; then
+        local cur
+        cur="$(git -C "$SRC/amneziawg-go" describe --tags --exact-match 2>/dev/null || true)"
+        if [ "$cur" = "$AWG_GO_REF" ]; then
+            log "amneziawg-go $cur — актуален"
+            return 0
+        fi
+        log "amneziawg-go ${cur:-неизвестной версии} → $AWG_GO_REF: пересборка…"
+        AWG_GO_REBUILT=1
+    fi
     export DEBIAN_FRONTEND=noninteractive GOFLAGS=-buildvcs=false
     apt-get install -y -qq build-essential git make curl ca-certificates >/dev/null
     install_go3
@@ -644,6 +666,25 @@ main() {
         log "Обновление слоя AmneziaWG (код и сервисы; конфиги, порты и обфускация НЕ меняются)"
         install_awg
         deploy_overlay
+        # Датапас слоя 3.0 раньше не обновлялся ВООБЩЕ: install_awg3 отсюда не
+        # вызывался, а на полном прогоне выходил по «бинарник есть». В сумме два
+        # независимых блокиратора — amneziawg-go навсегда оставался той версии,
+        # с которой сервер поставили, сколько бы раз ни запускали --update.
+        if [ -f "$SERVICES" ] && grep -q '^LAYER3=1' "$SERVICES" 2>/dev/null; then
+            install_awg3
+            if [ "${AWG_GO_REBUILT:-0}" = 1 ]; then
+                # shellcheck disable=SC1090
+                . "$SERVICES"
+                local i
+                for i in "${AZ3_IFACE:-antizapret-awg3}" "${VPN3_IFACE:-vpn-awg3}"; do
+                    systemctl is-enabled "awg3@$i" >/dev/null 2>&1 || continue
+                    systemctl restart "awg3@$i" || {
+                        err "слой 3.0: awg3@$i не перезапустился на новом датапасе."
+                        journalctl -u "awg3@$i" -n 12 --no-pager 2>/dev/null | sed 's/^/    /' >&2
+                    }
+                done
+            fi
+        fi
         if [ -f "$SERVICES" ]; then
             # shellcheck disable=SC1090
             . "$SERVICES"
