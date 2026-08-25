@@ -463,6 +463,15 @@ def client(name: str, origin: str = None) -> str:
                             "статистика появится после первого handshake.")
             return f"Клиент '{name}' не найден."
 
+        # Отсеиваем peer'ов, которых уже нет в серверных конфигах. del_client
+        # не трогает stats.db, поэтому клиент, пересозданный под тем же именем,
+        # тащил бы в сумму трафик своего удалённого предшественника. Если живых
+        # не осталось вовсе — показываем что есть, чтобы история не пропала.
+        live = set(load_names())
+        alive = [p for p in prows if p[0] in live]
+        if alive:
+            prows = alive
+
         # по каждому peer'у собираем итоги, потом складываем
         per = []          # (iface, origin, rx, tx, hs, endpoint, pubkey)
         for pk, ifc, org in prows:
