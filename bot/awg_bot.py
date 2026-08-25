@@ -413,6 +413,10 @@ SVC_TITLE = {
 }
 SVC_TAG = {"antizapret": "🌐", "vpn": "🔒", "antizapret3": "🌐³", "vpn3": "🔒³"}
 
+# Сколько клиентов на страницу списка. Десять умещаются на экран телефона
+# целиком, вместе с навигацией и «Назад».
+CLIENTS_PER_PAGE = 10
+
 
 def render_doctor(out: str, err: str = "") -> str:
     """awg-doctor --json → аккуратный экран в стиле остальных.
@@ -778,7 +782,14 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d == "clients:menu":
         return await show(c, "👥 <b>Клиенты</b>", clients_menu())
 
-    if d == "clients:list":
+    if d == "clients:list" or d.startswith("clients:list:"):
+        # Страница: раньше список рисовался одним экраном с жёстким срезом [:80].
+        # На сервере с сотней клиентов это молча теряло хвост, а листать сотню
+        # кнопок в одном сообщении всё равно невозможно.
+        page = 0
+        if d.startswith("clients:list:"):
+            try: page = max(0, int(d.rsplit(":", 1)[1]))
+            except ValueError: page = 0
         az = [("antizapret", n) for n in awg_names("antizapret")]
         vp = [("vpn", n) for n in awg_names("vpn")]
         # клиенты слоя 3.0 живут в тех же каталогах, просто другие сервисы
@@ -786,18 +797,33 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
             az += [(_s3, n) for n in awg_names(_s3)]
         van = [("vanilla", n) for n in vanilla_wg_names()]
         ov = [("ovpn", n) for n in ovpn_names()]
+        allc = az + vp + van + ov
+        pages = max(1, (len(allc) + CLIENTS_PER_PAGE - 1) // CLIENTS_PER_PAGE)
+        page = min(page, pages - 1)
+        chunk = allc[page * CLIENTS_PER_PAGE:(page + 1) * CLIENTS_PER_PAGE]
         rows = []
-        for svc, n in (az + vp + van + ov)[:80]:
+        for svc, n in chunk:
             tag = {**SVC_TAG, "vanilla": "🅰️", "ovpn": "📄"}[svc]
             rows.append([(f"{tag} {n}", f"cli:{svc}:{n}")])
         if not rows:
             rows = [[("(клиентов нет)", "clients:menu")]]
+        if pages > 1:
+            # По краям листаем по кругу: с первой страницы «назад» уводит на
+            # последнюю. Так до хвоста списка добираться одним нажатием.
+            prev_p = (page - 1) % pages
+            next_p = (page + 1) % pages
+            rows.append([("⬅️", f"clients:list:{prev_p}"),
+                         (f"стр. {page + 1}/{pages}", f"clients:list:{page}"),
+                         ("➡️", f"clients:list:{next_p}")])
         rows.append(back("clients:menu"))
         legend = ("Выбери клиента:\n"
                   "🌐 AWG 2.0 · AntiZapret (split)   🔒 AWG 2.0 · полный VPN\n")
         if layers_available()[1]:
             legend += "🌐³ AWG 3.0 · AntiZapret   🔒³ AWG 3.0 · полный VPN\n"
-        return await show(c, legend + "🅰️ сток WG   📄 OpenVPN", kb(rows))
+        legend += "🅰️ сток WG   📄 OpenVPN"
+        if pages > 1:
+            legend += f"\n\nВсего {len(allc)}, показаны {page * CLIENTS_PER_PAGE + 1}–{page * CLIENTS_PER_PAGE + len(chunk)}."
+        return await show(c, legend, kb(rows))
 
     if d.startswith("cli:"):
         _, svc, name = d.split(":", 2)
