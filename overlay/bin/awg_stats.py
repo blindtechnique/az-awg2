@@ -571,9 +571,26 @@ def server_info() -> str:
     except Exception:  # noqa: BLE001
         dtot = dpct = 0
     with db() as c:
-        total_clients = c.execute("SELECT COUNT(*) FROM peers").fetchone()[0]
-        online = c.execute("SELECT COUNT(*) FROM totals WHERE last_handshake > ?",
-                           (now - ONLINE_WINDOW,)).fetchone()[0]
+        # Считаем людей и конфиги отдельно, и только тех, кто реально есть в
+        # серверных конфигах. Раньше здесь стоял COUNT(*) по peers: он считал
+        # строки, а строк у одного человека несколько (ваниль заводит клиента
+        # сразу в antizapret и vpn), да ещё и удалённые клиенты остаются в базе
+        # навсегда — del_client её не чистит. На сервере с 85 людьми выходило 126.
+        live = load_names()                      # pubkey -> (name, iface, origin)
+        total_configs = len(live)
+        total_clients = len({v[0] for v in live.values()})
+        if live:
+            marks = ",".join("?" for _ in live)
+            online = len({live[pk][0] for (pk,) in c.execute(
+                f"SELECT pubkey FROM totals WHERE last_handshake > ? "
+                f"AND pubkey IN ({marks})",
+                (now - ONLINE_WINDOW, *live)).fetchall()})
+        else:
+            # конфиги не прочитались — честнее показать счётчик по базе, чем ноль
+            total_configs = total_clients = c.execute(
+                "SELECT COUNT(*) FROM peers").fetchone()[0]
+            online = c.execute("SELECT COUNT(*) FROM totals WHERE last_handshake > ?",
+                               (now - ONLINE_WINDOW,)).fetchone()[0]
         tot = c.execute("SELECT SUM(rx_life),SUM(tx_life) FROM totals").fetchone()
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         d24 = c.execute("SELECT SUM(rx),SUM(tx) FROM daily WHERE day=?", (day,)).fetchone()
@@ -588,7 +605,7 @@ def server_info() -> str:
         f"Диск {dpct:.0f}% · аптайм {_uptime()}",
         f"Load avg: {load}",
         "",
-        f"👥 Клиентов: {total_clients} · онлайн {online}",
+        f"👥 Клиентов: {total_clients}"        + (f" ({total_configs} конфигов)" if total_configs != total_clients else "")        + f" · онлайн {online}",
         f"За 24ч: {d24_all} · всего: {tot_all}",
     ]
     if top:
