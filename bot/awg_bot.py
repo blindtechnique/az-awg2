@@ -134,8 +134,13 @@ def vanilla_wg_names() -> list:
 
 
 OVPN_STATUS_DIR = os.environ.get("AWG_OVPN_STATUS_DIR", "/etc/openvpn/server/logs")
+
 OVPN_STATUS_FILES = ["antizapret-udp-status.log", "antizapret-tcp-status.log",
                      "vpn-udp-status.log", "vpn-tcp-status.log"]
+
+# Сколько клиентов на страницу списка. Десять умещаются на экран телефона
+# целиком, вместе с навигацией и кнопкой «Назад».
+CLIENTS_PER_PAGE = 10
 
 
 def _human_bytes(n: int) -> str:
@@ -677,22 +682,43 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
     if d == "clients:menu":
         return await show(c, "👥 <b>Клиенты</b>", clients_menu())
 
-    if d == "clients:list":
+    if d == "clients:list" or d.startswith("clients:list:"):
+        # Страница: раньше список рисовался одним экраном с жёстким срезом [:80].
+        # На сервере с сотней клиентов это молча теряло хвост, а листать сотню
+        # кнопок в одном сообщении всё равно невозможно.
+        page = 0
+        if d.startswith("clients:list:"):
+            try: page = max(0, int(d.rsplit(":", 1)[1]))
+            except ValueError: page = 0
         az = [("antizapret", n) for n in awg_names("antizapret")]
         vp = [("vpn", n) for n in awg_names("vpn")]
         van = [("vanilla", n) for n in vanilla_wg_names()]
         ov = [("ovpn", n) for n in ovpn_names()]
+        allc = az + vp + van + ov
+        pages = max(1, (len(allc) + CLIENTS_PER_PAGE - 1) // CLIENTS_PER_PAGE)
+        page = min(page, pages - 1)
+        chunk = allc[page * CLIENTS_PER_PAGE:(page + 1) * CLIENTS_PER_PAGE]
         rows = []
-        for svc, n in (az + vp + van + ov)[:80]:
+        for svc, n in chunk:
             tag = {"antizapret": "🌐", "vpn": "🔒", "vanilla": "🅰️", "ovpn": "📄"}[svc]
             rows.append([(f"{tag} {n}", f"cli:{svc}:{n}")])
         if not rows:
             rows = [[("(клиентов нет)", "clients:menu")]]
+        if pages > 1:
+            # По краям листаем по кругу: с первой страницы «назад» уводит на
+            # последнюю. Так до хвоста списка добираться одним нажатием.
+            prev_p = (page - 1) % pages
+            next_p = (page + 1) % pages
+            rows.append([("⬅️", f"clients:list:{prev_p}"),
+                         (f"стр. {page + 1}/{pages}", f"clients:list:{page}"),
+                         ("➡️", f"clients:list:{next_p}")])
         rows.append(back("clients:menu"))
-        return await show(c, "Выбери клиента:\n"
-                          "🌐 AWG 2.0 · AntiZapret (split)   🔒 AWG 2.0 · полный VPN\n"
-                          "🅰️ сток WG   📄 OpenVPN",
-                          kb(rows))
+        legend = ("Выбери клиента:\n"
+                  "🌐 AWG 2.0 · AntiZapret (split)   🔒 AWG 2.0 · полный VPN\n"
+                  "🅰️ сток WG   📄 OpenVPN")
+        if pages > 1:
+            legend += f"\n\nВсего {len(allc)}, показаны {page * CLIENTS_PER_PAGE + 1}–{page * CLIENTS_PER_PAGE + len(chunk)}."
+        return await show(c, legend, kb(rows))
 
     if d.startswith("cli:"):
         _, svc, name = d.split(":", 2)
