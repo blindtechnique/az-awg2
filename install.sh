@@ -33,7 +33,10 @@
 #                      Токен и chat_id можно передать аргументами или ввести
 #                      интерактивно. Повторный запуск обновляет токен/админов.
 #   --bot-token X      токен бота для --install-bot без интерактива
-#   --bot-admins X     chat_id (через запятую) для --install-bot без интерактива
+#   --bot-admins X     chat_id админов через запятую. Сам по себе, без
+#                      --install-bot, меняет ТОЛЬКО список админов и
+#                      перезапускает бота — переустановка не нужна.
+#                      Список заменяется целиком: перечисляй всех, включая себя.
 #   --remove-bot       удалить только Telegram-бот (слой AmneziaWG остаётся)
 #   --uninstall        полностью удалить слой AmneziaWG (ваниль не трогается)
 #
@@ -418,15 +421,71 @@ _deploy_bot() {  # _deploy_bot <token> <admins> — общая часть уст
     log "Бот запущен. Напиши ему /start"
 }
 
+# ── действующие настройки бота ───────────────────────────────────────────────
+# Установщик за свою историю держал токен и админов в двух разных местах, и на
+# живых серверах встречаются оба: сначала — строки Environment= в юните, позже —
+# отдельный bot.env с правами 600 (юнит в /etc/systemd/system читается всеми,
+# и токен оттуда утекал любому локальному пользователю).
+#
+# Читаем по убыванию свежести: bot.env → install-state.env → юнит. Раньше
+# смотрели только в юнит, и на новой раскладке «Enter = оставить текущее»
+# не срабатывало никогда: _deploy_bot как раз вычищает эти строки из юнита.
+bot_prev() {  # bot_prev <имя переменной>
+    local key="$1" v=""
+    [ -f "$DEST/bot.env" ] && v="$(sed -n "s/^${key}=//p" "$DEST/bot.env" 2>/dev/null | head -1)"
+    if [ -z "$v" ] && [ -f "$STATE" ]; then
+        v="$(sed -n "s/^${key}=//p" "$STATE" 2>/dev/null | head -1)"
+        v="${v%\'}"; v="${v#\'}"      # в STATE значения записаны в одинарных кавычках
+    fi
+    if [ -z "$v" ] && [ -f /etc/systemd/system/awg-bot.service ]; then
+        v="$(sed -n "s/^Environment=${key}=//p" /etc/systemd/system/awg-bot.service 2>/dev/null | head -1)"
+    fi
+    printf '%s' "$v"
+}
+
+# ── сменить список админов, не переустанавливая бота ──────────────────────────
+# awg_bot.py читает AWG_BOT_ADMINS один раз при старте процесса, поэтому хватает
+# правки строки и рестарта юнита: venv, зависимости и токен не трогаем. Список
+# ЗАМЕНЯЕТСЯ целиком — перечислять надо всех, включая себя.
+set_bot_admins() {  # set_bot_admins <chat_id через запятую>
+    local admins="$1" unit=/etc/systemd/system/awg-bot.service
+    [ -f "$unit" ] || { err "Бот не установлен. Сначала: bash install.sh --install-bot"; exit 1; }
+    # Проверяем до записи: пустое значение или мусор в списке молча лишают
+    # доступа ВСЕХ — бот с пустым ADMINS не отвечает никому и падает на старте.
+    case "$admins" in
+        ''|*[!0-9,]*|,*|*,|*,,*)
+            err "chat_id — только цифры через запятую, без пробелов: «$admins»"
+            err "Пример: bash install.sh --bot-admins 111222333,444555666"
+            exit 2 ;;
+    esac
+    if [ -f "$DEST/bot.env" ] && grep -q '^AWG_BOT_ADMINS=' "$DEST/bot.env"; then
+        sed -i "s#^AWG_BOT_ADMINS=.*#AWG_BOT_ADMINS=${admins}#" "$DEST/bot.env"
+        log "Обновлён $DEST/bot.env"
+    elif grep -q '^Environment=AWG_BOT_ADMINS=' "$unit" 2>/dev/null; then
+        sed -i "s#^Environment=AWG_BOT_ADMINS=.*#Environment=AWG_BOT_ADMINS=${admins}#" "$unit"
+        systemctl daemon-reload
+        log "Обновлён $unit (раскладка до переноса токена в bot.env)"
+    else
+        err "не нашёл, где заданы админы: ни $DEST/bot.env, ни Environment= в юните"
+        exit 1
+    fi
+    # STATE держим в согласии: из него setup_bot берёт значения при переустановке
+    # слоя, и рассинхрон вернул бы старый список в самый неожиданный момент.
+    if [ -f "$STATE" ] && grep -q '^AWG_BOT_ADMINS=' "$STATE"; then
+        sed -i "s#^AWG_BOT_ADMINS=.*#AWG_BOT_ADMINS='${admins}'#" "$STATE"
+    fi
+    systemctl restart awg-bot
+    log "Админы бота: $admins"
+    log "Проверка:  journalctl -u awg-bot -n 3 --no-pager   (бот печатает список при старте)"
+}
+
 setup_bot() {  # вызывается из awg_layer при первичной установке (данные из STATE)
     [ "${AWG_BOT_INSTALL:-0}" = 1 ] || { log "Бот не выбран — пропуск"; return; }
     local t="${AWG_BOT_TOKEN:-}" a="${AWG_BOT_ADMINS:-}"
     # бот мог ставиться позже через --install-bot: тогда в STATE флаг есть,
-    # а токена нет — берём действующие значения из юнита, не ломая бота
-    if { [ -z "$t" ] || [ -z "$a" ]; } && [ -f /etc/systemd/system/awg-bot.service ]; then
-        [ -z "$t" ] && t="$(grep -oP 'AWG_BOT_TOKEN=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
-        [ -z "$a" ] && a="$(grep -oP 'AWG_BOT_ADMINS=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
-    fi
+    # а токена нет — берём действующие значения оттуда, где они реально лежат
+    [ -z "$t" ] && t="$(bot_prev AWG_BOT_TOKEN)"
+    [ -z "$a" ] && a="$(bot_prev AWG_BOT_ADMINS)"
     if [ -z "$t" ] || [ -z "$a" ]; then
         log "Бот: нет токена/chat_id — пропуск (доустановка: bash install.sh --install-bot)"
         return
@@ -457,21 +516,25 @@ install_bot_only() {
     # ре-инсталл поверх существующего бота: подставим прошлые значения как дефолт
     local prev_token="" prev_admins=""
     if [ -f /etc/systemd/system/awg-bot.service ]; then
-        prev_token="$(grep -oP 'AWG_BOT_TOKEN=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
-        prev_admins="$(grep -oP 'AWG_BOT_ADMINS=\K\S+' /etc/systemd/system/awg-bot.service 2>/dev/null || true)"
+        prev_token="$(bot_prev AWG_BOT_TOKEN)"
+        prev_admins="$(bot_prev AWG_BOT_ADMINS)"
         log "Бот уже установлен — обновлю токен/админов (Enter = оставить текущее)."
     fi
-    if [ -z "$token" ]; then
-        read -rp "  Токен бота (@BotFather)${prev_token:+ [оставить текущий]}: " token
-        [ -z "$token" ] && token="$prev_token"
+    # Токен спрашиваем, только если его негде взять: менять один лишь список
+    # админов — самая частая операция, и требовать ради неё лезть в @BotFather
+    # за токеном незачем.
+    if [ -z "$token" ] && [ -z "$prev_token" ]; then
+        read -rp "  Токен бота (@BotFather): " token
     fi
+    [ -z "$token" ] && token="$prev_token"
     if [ -z "$admins" ]; then
         read -rp "  chat_id админов (через запятую)${prev_admins:+ [$prev_admins]}: " admins
         [ -z "$admins" ] && admins="$prev_admins"
     fi
     if [ -z "$token" ] || [ -z "$admins" ]; then
-        log "❌ Нужны и токен, и chat_id. Пример:"
+        log "❌ Нужны и токен, и chat_id. Примеры:"
         log "   bash install.sh --install-bot 123456:ABC 111222333"
+        log "   bash install.sh --bot-admins 111222333,444555666   (только админы)"
         exit 2
     fi
     _deploy_bot "$token" "$admins"
@@ -706,6 +769,12 @@ main() {
     fi
     if [ "$REMOVE_BOT" = 1 ]; then
         remove_bot_only
+        exit 0
+    fi
+    # --bot-admins сам по себе (без --install-bot) меняет только список админов:
+    # правка строки и рестарт юнита, без venv, pip и повторной раскладки бота.
+    if [ "$INSTALL_BOT" = 0 ] && [ -n "$CLI_BOT_ADMINS" ] && [ -z "$CLI_BOT_TOKEN" ]; then
+        set_bot_admins "$CLI_BOT_ADMINS"
         exit 0
     fi
     if [ "$UNINSTALL" = 1 ]; then
