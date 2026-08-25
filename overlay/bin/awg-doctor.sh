@@ -101,7 +101,15 @@ for pair in "obfuscation.env|2.0|$LAYER2" "obfuscation3.env|3.0|$LAYER3"; do
 done
 # незаменённый плейсхолдер — классический признак, что обфускация не применилась
 if grep -rqs '__AWG3\?_OBFUSCATION__' "$AWG_DIR"/*.conf 2>/dev/null; then
-    bad "в серверном конфиге остался плейсхолдер обфускации — запусти awg-obfuscation --regenerate"
+    # Плейсхолдер у слоёв разный, и лечить надо тот слой, где он остался:
+    # awg-obfuscation без --v3 перегенерирует профиль 2.0, а конфиг 3.0 как был
+    # сломан, так и останется. Поэтому смотрим, в каком именно файле нашли.
+    if grep -rqs '__AWG3_OBFUSCATION__' "$AWG_DIR"/*.conf 2>/dev/null; then
+        bad "в конфиге слоя 3.0 остался плейсхолдер обфускации — awg-obfuscation --v3 --regenerate --apply && awg-client regen-all"
+    fi
+    if grep -rqs '__AWG_OBFUSCATION__' "$AWG_DIR"/*.conf 2>/dev/null; then
+        bad "в конфиге слоя 2.0 остался плейсхолдер обфускации — awg-obfuscation --regenerate --apply && awg-client regen-all"
+    fi
 else
     ok "плейсхолдеров в конфигах нет"
 fi
