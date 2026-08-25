@@ -449,16 +449,29 @@ LAYER_TITLE = {"vanilla": "стоковый WG", "awg2": "AmneziaWG 2.0",
 
 
 def client(name: str, origin: str = None) -> str:
+    """Карточка клиента: сводка по ВСЕМ его интерфейсам внутри слоя.
+
+    Одно имя — это, как правило, несколько peer'ов с разными ключами. У
+    ванильного AntiZapret их сразу два (antizapret и vpn), у нашего слоя тоже
+    может быть два. Раньше здесь стоял `LIMIT 1` без сортировки, то есть бралась
+    произвольная строка — фактически первая по rowid. Если человек ходил через
+    полный VPN, а первой оказывалась запись antizapret, карточка показывала
+    нули при живом трафике: ровно то, что выглядит как «статистика не работает».
+    Топ-5 в информации о сервере этим не страдал, потому что считает JOIN'ом по
+    всем строкам сразу.
+    """
     init_db()
     now = int(time.time())
     with db() as c:
         if origin:
-            prow = c.execute("SELECT pubkey,iface,origin FROM peers WHERE name=? AND origin=? LIMIT 1",
-                             (name, origin)).fetchone()
+            prows = c.execute("""SELECT pubkey,iface,origin FROM peers
+                                 WHERE name=? AND origin=? ORDER BY iface""",
+                              (name, origin)).fetchall()
         else:
-            prow = c.execute("SELECT pubkey,iface,origin FROM peers WHERE name=? LIMIT 1",
-                             (name,)).fetchone()
-        if not prow:
+            prows = c.execute("""SELECT pubkey,iface,origin FROM peers
+                                 WHERE name=? ORDER BY origin, iface""",
+                              (name,)).fetchall()
+        if not prows:
             # клиент может существовать в серверном конфиге, но ещё ни разу
             # не подключался — тогда его нет в БД статистики
             for pk2, (nm, ifc, org2) in load_names().items():
@@ -468,24 +481,51 @@ def client(name: str, origin: str = None) -> str:
                             "Клиент создан, но ещё ни разу не подключался —\n"
                             "статистика появится после первого handshake.")
             return f"Клиент '{name}' не найден."
-        pk, iface, org = prow
-        t = c.execute("""SELECT rx_life,tx_life,last_handshake,endpoint
-                         FROM totals WHERE pubkey=?""", (pk,)).fetchone() or (0, 0, 0, "")
-        is_on = t[2] and (now - t[2]) < ONLINE_WINDOW
-        cur_ip = (t[3] or "").rsplit(":", 1)[0].strip("[]")
-        layer = LAYER_TITLE.get(org, "AmneziaWG 2.0")
-        out = [f"📊 <b>{name}</b> [{iface} · {layer}] {'🟢 онлайн' if is_on else '⚪️ офлайн'}",
-               f"Последняя активность: {dt(t[2])} ({ago(t[2])})",
-               f"Всего трафика: ↓{human(t[0])} ↑{human(t[1])} (Σ {human(t[0]+t[1])})"]
+
+        # по каждому peer'у собираем итоги, потом складываем
+        per = []          # (iface, origin, rx, tx, hs, endpoint, pubkey)
+        for pk, ifc, org in prows:
+            r = c.execute("""SELECT rx_life,tx_life,last_handshake,endpoint
+                             FROM totals WHERE pubkey=?""", (pk,)).fetchone() or (0, 0, 0, "")
+            per.append((ifc, org, r[0] or 0, r[1] or 0, r[2] or 0, r[3] or "", pk))
+
+        rx = sum(p[2] for p in per)
+        tx = sum(p[3] for p in per)
+        hs = max(p[4] for p in per)
+        is_on = hs and (now - hs) < ONLINE_WINDOW
+        # адрес и слой берём у самого свежего peer'а — именно через него человек
+        # ходит сейчас (или ходил последним)
+        live = max(per, key=lambda p: p[4])
+        cur_ip = (live[5] or "").rsplit(":", 1)[0].strip("[]")
+        layer = LAYER_TITLE.get(live[1], "AmneziaWG 2.0")
+        ifaces = "+".join(dict.fromkeys(p[0] for p in per))
+
+        out = [f"📊 <b>{name}</b> [{ifaces} · {layer}] {'🟢 онлайн' if is_on else '⚪️ офлайн'}",
+               f"Последняя активность: {dt(hs)} ({ago(hs)})",
+               f"Всего трафика: ↓{human(rx)} ↑{human(tx)} (Σ {human(rx + tx)})"]
+
+        # разбивка по интерфейсам — без неё непонятно, каким конфигом человек
+        # реально пользуется, а какой лежит мёртвым грузом
+        if len(per) > 1:
+            out.append("По интерфейсам:")
+            for ifc, org, prx, ptx, phs, _ep, _pk in sorted(per, key=lambda p: -(p[2] + p[3])):
+                mark = "🟢" if phs and (now - phs) < ONLINE_WINDOW else ("·" if phs else "⚪️")
+                tail = "" if phs else " — ни разу не подключался"
+                out.append(f"  {mark} {ifc}: ↓{human(prx)} ↑{human(ptx)}{tail}")
+
         conn = c.execute("""SELECT ts,ip,rx_start,tx_start FROM connections
-                            WHERE pubkey=? ORDER BY ts DESC LIMIT 1""", (pk,)).fetchone()
+                            WHERE pubkey=? ORDER BY ts DESC LIMIT 1""", (live[6],)).fetchone()
         if conn and is_on:
-            srx = max(0, t[0] - conn[2]); stx = max(0, t[1] - conn[3])
+            srx = max(0, live[2] - conn[2]); stx = max(0, live[3] - conn[3])
             out.append(f"Сессия с {dt(conn[0])}: ↓{human(srx)} ↑{human(stx)}")
         if cur_ip:
             out.append(f"IP сейчас: <code>{cur_ip}</code> · {geo_str(cur_ip)}")
-        conns = c.execute("""SELECT ts,ip FROM connections WHERE pubkey=?
-                             ORDER BY ts DESC LIMIT 10""", (pk,)).fetchall()
+
+        # история подключений — общая по всем ключам клиента
+        marks = ",".join("?" for _ in per)
+        conns = c.execute(f"""SELECT ts,ip FROM connections WHERE pubkey IN ({marks})
+                              ORDER BY ts DESC LIMIT 10""",
+                          tuple(p[6] for p in per)).fetchall()
         if conns:
             out.append("\n🔌 Подключения (последние 10):")
             for ts, ip in conns:
