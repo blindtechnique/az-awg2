@@ -436,11 +436,14 @@ build_interfaces3() {
 }
 
 gen_obfuscation3() {
-    log "Профиль обфускации 3.0: preset=$PRESET template=${TEMPLATE:-default}"
+    # Пусто — берём настройки слоя 2.0: так вели себя все установки до
+    # появления раздельных пресетов, и молча менять им профиль нельзя.
+    local p3="${PRESET3:-$PRESET}" t3="${TEMPLATE3:-$TEMPLATE}"
+    # Пояснения — строго ДО строки с переносом: комментарий между `\` и
+    # командой рвёт перенос, и префикс окружения становится обычным
+    # присваиванием в текущей оболочке, до дочернего процесса не доходя.
+    log "Профиль обфускации 3.0: preset=$p3 template=${t3:-default}"
     AWG3_AZ_CONF="$AWG_DIR/${AZ3_IFACE}.conf" AWG3_VPN_CONF="$AWG_DIR/${VPN3_IFACE}.conf" \
-        # Пусто — берём настройки слоя 2.0: так вели себя все установки до
-        # появления раздельных пресетов, и молча менять им профиль нельзя.
-        local p3="${PRESET3:-$PRESET}" t3="${TEMPLATE3:-$TEMPLATE}"
         "$DEST/awg-obfuscation.sh" --v3 --preset "$p3" ${t3:+--template "$t3"} \
         --fp "$FP" --mtu "$MTU3" ${HOST:+--host "$HOST"} --apply
 }

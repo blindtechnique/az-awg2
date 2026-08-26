@@ -87,22 +87,45 @@ if [ "$LAYER3" = 1 ]; then
     # без header protection, паддинга и таймингов. Раньше доктор в обоих случаях
     # писал «параметры 3.0 не применены», и владелец исправного сервера шёл
     # искать несуществующую проблему. Поэтому сначала смотрим, что за пресет.
-    local_i="${AZ3_IFACE:-antizapret-awg3}"
     v3_preset="$(sed -n 's/^META_PRESET=//p' "$AWG_DIR/obfuscation3.meta" 2>/dev/null | head -1)"
-    if [ -x "$DEST/awg3-uapi.py" ] && python3 "$DEST/awg3-uapi.py" show "$local_i" 2>/dev/null \
-         | grep -q header_protection_key; then
-        ok "header protection применена (пресет ${v3_preset:-?})"
-    else
+    v3_uapi="$DEST/awg3-uapi.py"
+    # Спрашиваем ОБА интерфейса. Раньше проверялся только antizapret-awg3, и
+    # полный туннель мог сколько угодно работать как 2.0 — доктор молчал.
+    # Бит +x не проверяем: скрипт запускается через python3, и потеря права на
+    # исполнение раньше давала диагноз «параметры не применены» на пустом месте.
+    v3_missing=""
+    for local_i in "${AZ3_IFACE:-antizapret-awg3}" "${VPN3_IFACE:-vpn-awg3}"; do
+        if [ ! -f "$v3_uapi" ]; then
+            warn "нечем спросить демона: нет $v3_uapi — состояние 3.0 неизвестно"
+            v3_missing=""
+            break
+        fi
+        # «Спросить не удалось» и «ключа нет» — разные диагнозы, и чинятся они
+        # по-разному. Прежде обе ситуации сваливались в одну ветку.
+        v3_live="$(python3 "$v3_uapi" show "$local_i" 2>/dev/null || true)"
+        if [ -z "$v3_live" ]; then
+            warn "$local_i: демон не ответил по UAPI — состояние 3.0 неизвестно"
+            echo "     смотри: journalctl -u awg3@$local_i -n 30 --no-pager" >&2
+            continue
+        fi
+        case "$v3_live" in
+            *header_protection_key*)
+                ok "$local_i: header protection применена (пресет ${v3_preset:-?})" ;;
+            *) v3_missing="$v3_missing $local_i" ;;
+        esac
+    done
+    if [ -n "$v3_missing" ]; then
         case "$v3_preset" in
             router|low)
-                ok "пресет $v3_preset — без header protection, так и задумано"
+                ok "пресет $v3_preset — без header protection, так и задумано (${v3_missing# })"
                 echo "     обфускация на уровне 2.0; нужен полный набор 3.0 —" >&2
-                echo "     смени пресет: awg-obfuscation --v3 --regenerate --apply" >&2
+                echo "     в боте: 🛡 Обфускация → 🛠 Сменить пресет," >&2
+                echo "     или руками: awg-obfuscation --v3 --preset medium --regenerate --apply" >&2
                 echo "     и раздай клиентам свежие конфиги: awg-client regen-all" >&2 ;;
             *)
-                warn "пресет ${v3_preset:-?} должен включать header protection, но её нет"
+                warn "пресет ${v3_preset:-?} должен включать header protection, но её нет:${v3_missing}"
                 echo "     профиль: $AWG_DIR/obfuscation3.env (ищи AWG_HPK_HEX)" >&2
-                echo "     параметры: $AWG_DIR/$local_i.v3" >&2
+                echo "     параметры:$(for i in $v3_missing; do printf ' %s' "$AWG_DIR/$i.v3"; done)" >&2
                 echo "     починить: awg-obfuscation --v3 --regenerate --apply" >&2 ;;
         esac
     fi
