@@ -27,6 +27,8 @@ AZ_SETUP_URL = ("https://raw.githubusercontent.com/GubernievS/"
 LAYER_REPO = "https://github.com/blindtechnique/az-awg2.git"
 AZ_SHA_FILE = "/opt/antizapret-awg/.az-setup-sha"
 LAYER_REV_FILE = "/opt/antizapret-awg/.layer-rev"
+LAYER_BRANCH_FILE = "/opt/antizapret-awg/.layer-branch"
+BOT_ENV = "/opt/antizapret-awg/bot.env"
 LOCAL_SETUP = "/root/antizapret/setup.sh"
 
 
@@ -65,6 +67,31 @@ def _remote_head(repo, branch="main"):
     return ""
 
 
+def _layer_branch():
+    """Ветка, с которой ставили слой.
+
+    Раньше сравнение шло с веткой main, зашитой в умолчание _remote_head: на
+    установке с beta ревизии не совпадали никогда, поэтому «есть изменения
+    кода» горело вечно — обновление ничего не меняло, а кнопка загоралась
+    снова. Ветку помнит .layer-branch, который пишет установщик.
+    """
+    branch = _read(LAYER_BRANCH_FILE)
+    if branch:
+        return branch
+    # Установки, сделанные до появления .layer-branch, его не имеют. Ветку
+    # восстанавливаем из URL, который бот использует для кнопки «Обновить
+    # слой»: .../<owner>/<repo>/<branch>/install.sh — и запоминаем на диск,
+    # чтобы чинить это один раз.
+    for line in _read(BOT_ENV).splitlines():
+        if not line.startswith("AWG_INSTALL_SH_URL="):
+            continue
+        parts = line.split("=", 1)[1].strip().split("/")
+        if len(parts) >= 2 and parts[-1] == "install.sh" and parts[-2]:
+            _write(LAYER_BRANCH_FILE, parts[-2])
+            return parts[-2]
+    return "main"
+
+
 def check_updates():
     """Есть ли на GitHub изменения КОДА (не списков) — AntiZapret и слоя."""
     res = {"antizapret": {}, "layer": {}}
@@ -89,7 +116,7 @@ def check_updates():
     }
 
     # Слой: HEAD ветки форка vs зафиксированная ревизия
-    lay_remote = _remote_head(LAYER_REPO)
+    lay_remote = _remote_head(LAYER_REPO, _layer_branch())
     lay_local = _read(LAYER_REV_FILE)
     lay_known = bool(lay_local)
     if not lay_known and lay_remote:

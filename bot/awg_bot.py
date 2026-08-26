@@ -636,12 +636,32 @@ def ovpn_names() -> list:
 
 # ── отправка артефактов (отдельными сообщениями) ─────────────────────────────
 
+# Приложение Amnezia с 5.0 считает версию протокола само и знает ровно одну
+# тройку — 3.1; строки «3.0» в нём нет вовсе. Любой непустой параметр слоя 3
+# (у нас это HeaderProtectionKey) сразу даёт «version 3.1». То есть цифра в
+# приложении и наши подписи расходятся ЗАКОНОМЕРНО, и переименовывать слой
+# нельзя: он работает на 3.0, а 3.1 не используется намеренно (регрессия
+# kmod #215 и amnezia-client #3043). Объясняем расхождение там, где человек
+# его встречает, — вместе с выданным конфигом.
+V3_APP_NOTE = ("\n\nℹ️ Приложение Amnezia 5.0.1.5+ подпишет этот профиль как "
+               "«AmneziaWG (version 3.1)» — так и должно быть. Начиная с 5.0 "
+               "клиент считает версию сам и знает только 3.1; сервер отдаёт "
+               "параметры 3.0 полностью, на работу это не влияет.")
+
+
+def svc_is_v3(svc: str) -> bool:
+    """Слой 3.0: у него отдельные сервисы и отдельный профиль обфускации."""
+    return svc in ("antizapret3", "vpn3")
+
+
 async def send_awg_files(chat: int, svc: str, name: str):
     base = os.path.join(CLIENT_DIR, svc, f"{svc}-{name}")
     conf, qr, vpn = base + "-am.conf", base + ".png", base + ".vpn"
     if os.path.exists(conf):
-        await bot.send_document(chat, FSInputFile(conf, filename=f"{name}.conf"),
-                                caption=f"📄 {svc}/{name} — AmneziaWG")
+        await bot.send_document(
+            chat, FSInputFile(conf, filename=f"{name}.conf"),
+            caption=f"📄 {svc}/{name} — AmneziaWG"
+                    + (V3_APP_NOTE if svc_is_v3(svc) else ""))
     # getsize > 0 — страховка от битого нулевого PNG: send_photo на пустом файле
     # роняет хендлер целиком, и пользователь остаётся с «⏳ Создаю…» навсегда.
     if os.path.exists(qr) and os.path.getsize(qr) > 0:
