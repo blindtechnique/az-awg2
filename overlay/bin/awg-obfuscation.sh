@@ -268,18 +268,36 @@ if [ "$APPLY" = 1 ]; then
     # Профиль при этом лежал в файлах, но до работающего демона не доезжал.
     unit_present=0
     systemctl cat "${unit_pfx}.service" >/dev/null 2>&1 && unit_present=1
+    # Есть ли чему ломаться. На ПЕРВОЙ установке юнитов ещё нет — их ставит
+    # switch_services уже после обфускации, — интерфейсы не подняты, и тишина
+    # тут норма. Ругаться и возвращать ненулевой код нужно только тогда, когда
+    # туннель уже работает и только что разошёлся с записанным конфигом.
+    live_any=0
+    for i in "$az_iface" "$vpn_iface"; do
+        ip link show "$i" >/dev/null 2>&1 && live_any=1
+    done
+    apply_failed=0
     if [ "$unit_present" = 1 ]; then
         for i in "$az_iface" "$vpn_iface"; do
             log "Перезапуск ${unit_pfx}${i} (чистый старт)"
             # stop + принудительный снос интерфейса (иначе up: already exists) + start
             systemctl stop "${unit_pfx}${i}" 2>/dev/null || true
             ip link del "$i" 2>/dev/null || true
-            systemctl start "${unit_pfx}${i}" || err "Не удалось поднять ${unit_pfx}${i}"
+            systemctl start "${unit_pfx}${i}" || {
+                err "Не удалось поднять ${unit_pfx}${i}"
+                [ "$live_any" = 1 ] && apply_failed=1
+                # завершающий true обязателен: группа — правая часть ||,
+                # и её ненулевой статус под set -e уронил бы скрипт
+                true
+            }
         done
-    else
-        err "Юнит ${unit_pfx}.service не найден."
+    elif [ "$live_any" = 1 ]; then
+        err "Юнит ${unit_pfx}.service не найден, а интерфейсы подняты."
         err "   Профиль записан в конфиги, но РАБОТАЮЩИЙ туннель его не получил:"
         err "   перезапусти интерфейсы вручную, иначе сервер и клиенты разойдутся."
+        apply_failed=1
+    else
+        log "Юнитов ${unit_pfx}* ещё нет — профиль применится при их первом старте."
     fi
     # Параметры 3.0 живут только в памяти amneziawg-go и применяются из
     # <iface>.v3 на ExecStartPost. Если перезапуск не случился или UAPI
@@ -295,11 +313,17 @@ if [ "$APPLY" = 1 ]; then
             case "$live" in
                 *header_protection_key*) log "Параметры 3.0 приняты демоном ($i)" ;;
                 *) err "Параметры 3.0 НЕ доехали до $i — туннель работает как 2.0."
-                   err "   Смотри: journalctl -u ${unit_pfx}${i} -n 30 --no-pager" ;;
+                   err "   Смотри: journalctl -u ${unit_pfx}${i} -n 30 --no-pager"
+                   apply_failed=1 ;;
             esac
         done
     fi
-    log "Готово. Клиентские конфиги синхронизируются автоматически (regen-all)."
+    if [ "$apply_failed" = 0 ]; then
+        log "Готово. Клиентские конфиги синхронизируются автоматически (regen-all)."
+    else
+        err "НЕ ГОТОВО: профиль лёг в файлы, но до работающего туннеля не доехал."
+        exit 3
+    fi
 else
     log "Профиль сгенерирован, но НЕ применён (--apply не задан)."
 fi

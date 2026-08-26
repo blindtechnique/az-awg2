@@ -739,14 +739,18 @@ main() {
     plan_services
     resolve_host
 
+    # Код 3 от обфускатора значит «в файлы легло, до туннеля не доехало». При
+    # установке это ожидаемо: юниты ставит и запускает switch_services* СРАЗУ
+    # ниже, там профиль и доедет. Валить установку из-за этого нельзя, но и
+    # глотать молча — тоже: если switch_services тоже не справится, он скажет.
     if [ "$LAYER2" = 1 ]; then
         build_interfaces
-        gen_obfuscation
+        gen_obfuscation || { _orc=$?; [ "$_orc" = 3 ] || exit "$_orc"; }
         switch_services
     fi
     if [ "$LAYER3" = 1 ]; then
         build_interfaces3
-        gen_obfuscation3
+        gen_obfuscation3 || { _orc=$?; [ "$_orc" = 3 ] || exit "$_orc"; }
         switch_services3
     fi
 
