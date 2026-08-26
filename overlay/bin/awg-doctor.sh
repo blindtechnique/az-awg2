@@ -82,13 +82,29 @@ if [ "$LAYER3" = 1 ]; then
     else bad "нет amneziawg-go"; fi
     check_iface "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-0}" 3
     check_iface "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-0}" 3
-    # параметры 3.0 живут только в памяти демона — проверяем через UAPI
+    # Параметры 3.0 живут только в памяти демона — спрашиваем через UAPI.
+    # Но их отсутствие само по себе НЕ поломка: пресеты router и low объявлены
+    # без header protection, паддинга и таймингов. Раньше доктор в обоих случаях
+    # писал «параметры 3.0 не применены», и владелец исправного сервера шёл
+    # искать несуществующую проблему. Поэтому сначала смотрим, что за пресет.
     local_i="${AZ3_IFACE:-antizapret-awg3}"
+    v3_preset="$(sed -n 's/^META_PRESET=//p' "$AWG_DIR/obfuscation3.meta" 2>/dev/null | head -1)"
     if [ -x "$DEST/awg3-uapi.py" ] && python3 "$DEST/awg3-uapi.py" show "$local_i" 2>/dev/null \
          | grep -q header_protection_key; then
-        ok "header protection применена"
+        ok "header protection применена (пресет ${v3_preset:-?})"
     else
-        warn "параметры 3.0 не применены — профиль работает как 2.0"
+        case "$v3_preset" in
+            router|low)
+                ok "пресет $v3_preset — без header protection, так и задумано"
+                echo "     обфускация на уровне 2.0; нужен полный набор 3.0 —" >&2
+                echo "     смени пресет: awg-obfuscation --v3 --regenerate --apply" >&2
+                echo "     и раздай клиентам свежие конфиги: awg-client regen-all" >&2 ;;
+            *)
+                warn "пресет ${v3_preset:-?} должен включать header protection, но её нет"
+                echo "     профиль: $AWG_DIR/obfuscation3.env (ищи AWG_HPK_HEX)" >&2
+                echo "     параметры: $AWG_DIR/$local_i.v3" >&2
+                echo "     починить: awg-obfuscation --v3 --regenerate --apply" >&2 ;;
+        esac
     fi
 fi
 
