@@ -6,7 +6,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0-2ea44f)](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
-[![OS](https://img.shields.io/badge/Ubuntu%2024.04%2B%20%C2%B7%20Debian%2012%2B-e95420?logo=ubuntu&logoColor=white)](#требования)
+[![OS](https://img.shields.io/badge/Ubuntu%2024.04%2B%20%C2%B7%20Debian%2013%2B-e95420?logo=ubuntu&logoColor=white)](#требования)
 [![Bash](https://img.shields.io/badge/bash-4EAA25?logo=gnubash&logoColor=white)](#)
 [![Telegram bot](https://img.shields.io/badge/Telegram-бот-26A5E4?logo=telegram&logoColor=white)](#telegram-бот)
 [![Based on AntiZapret-VPN](https://img.shields.io/badge/based%20on-AntiZapret--VPN-555)](https://github.com/GubernievS/AntiZapret-VPN)
@@ -60,7 +60,13 @@ flowchart LR
 ## Требования
 
 - **Ubuntu 24.04+** — рекомендуется, протестировано.
-- **Debian 12/13** — работает, best-effort: на самых свежих ядрах DKMS-модуль AmneziaWG иногда не собирается ([upstream issue](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/143)). Если модуль не загрузился — смотри `dkms status` и лог сборки.
+- **Debian 13+** — работает, best-effort: на самых свежих ядрах DKMS-модуль AmneziaWG иногда не собирается ([upstream issue](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/143)). Если модуль не загрузился — смотри `dkms status` и лог сборки.
+
+> [!IMPORTANT]
+> Планку задаёт не этот слой, а сам AntiZapret: его `setup.sh` читает версию
+> через `lsb_release` и отказывается ставиться на Debian младше 13 (код выхода
+> 5) и Ubuntu младше 24 (код 6). Слой живёт поверх уже работающего AntiZapret,
+> поэтому ниже этой планки он неприменим — ставить его просто не на что.
 - root, установленный AntiZapret (или чистый сервер — установщик поставит базу и перезагрузит машину).
 - Для бота: Python 3, `pip`/`venv` (ставятся автоматически). Зависимость: `aiogram 3` — устанавливается в изолированный venv `/opt/antizapret-awg/venv`.
 

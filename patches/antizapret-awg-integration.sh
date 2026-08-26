@@ -104,7 +104,7 @@ install_awg() {
     else
         # Debian и прочие не-Ubuntu: PPA недоступны. Добавляем репозиторий Amnezia
         # вручную (deb822, Suites: focal — DKMS-исходники дистро-независимы). Ключ с
-        # keyserver.ubuntu.com. Метод по гайду mk16.de (проверен на Debian 12/13).
+        # keyserver.ubuntu.com. Метод по гайду mk16.de (проверен на Debian 13).
         log "Установка amneziawg (Debian: ручной репозиторий Amnezia + DKMS)…"
         install -d -m 0755 /usr/share/keyrings
         # ВАЖНО: на Debian 13 верификатор sqv работает от пользователя _apt и
