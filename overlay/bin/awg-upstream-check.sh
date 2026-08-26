@@ -74,7 +74,19 @@ fi
 # ── код слоя ────────────────────────────────────────────────────────────────
 if [ -f "$DEST/.layer-rev" ]; then
     cur="$(cat "$DEST/.layer-rev")"
-    branch="$(cat "$DEST/.layer-branch" 2>/dev/null || echo main)"
+    branch="$(cat "$DEST/.layer-branch" 2>/dev/null || true)"
+    # Установки, сделанные до появления .layer-branch, этого файла не имеют,
+    # а молчаливый откат на main заставлял beta-сервер сравниваться с чужой
+    # веткой — «есть обновление» горело всегда. Ветку восстанавливаем из URL
+    # кнопки «Обновить слой»: .../<owner>/<repo>/<branch>/install.sh.
+    if [ -z "$branch" ] && [ -r "$DEST/bot.env" ]; then
+        u="$(grep -m1 "^AWG_INSTALL_SH_URL=" "$DEST/bot.env" 2>/dev/null || true)"
+        u="${u%/install.sh}"
+        [ "$u" != "${u#*//}" ] && branch="${u##*/}"
+        # чиним один раз, дальше проверка читает файл напрямую
+        [ -n "$branch" ] && echo "$branch" > "$DEST/.layer-branch" 2>/dev/null
+    fi
+    [ -n "$branch" ] || branch=main
     new="$(git ls-remote "https://github.com/blindtechnique/az-awg2.git" "refs/heads/$branch" 2>/dev/null | cut -c1-12)"
     if [ -n "$new" ] && [ "$new" != "$cur" ]; then add_row "az-awg2 ($branch)" "$cur" "$new" 1
     else add_row "az-awg2 ($branch)" "$cur" "${new:-?}" 0; fi

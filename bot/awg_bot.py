@@ -360,7 +360,7 @@ def upd_menu() -> InlineKeyboardMarkup:
     return kb([
         [("🔎 Проверить обновления", "upd:check")],
         [("📋 Обновить списки АнтиЗапрета", "upd:doall")],
-        [("🧬 Обновить AWG 2.0 (код слоя)", "upd:awg")],
+        [("🧬 Обновить AWG 2.0/3 (код слоя)", "upd:awg")],
         [("🛠 Перенастроить обфускацию", "reconf:preset")],
         back(),
     ])
@@ -975,7 +975,7 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
 
         txt = ("🔎 <b>Проверка обновлений (код, не списки)</b>\n\n"
                + _line("AntiZapret", az, "обнови из терминала (см. ниже)") + "\n"
-               + _line("Слой AWG 2.0", lay, "кнопка «Обновить AWG 2.0»") + "\n\n"
+               + _line("Слой AWG 2.0/3", lay, "кнопка «Обновить AWG 2.0/3»") + "\n\n"
                "Полное обновление AntiZapret делается штатной командой в терминале "
                "сервера:\n<code>bash &lt;(wget -qO- --no-hsts --inet4-only "
                "https://raw.githubusercontent.com/GubernievS/AntiZapret-VPN/main/"
@@ -1086,9 +1086,9 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         return await watch_unit(c, "az-doall", logf, "📋 <b>Обновление списков…</b>",
                                 "✅ Списки обновлены (custom-хук обновил и правила AWG 2.0).")
 
-    # ── обновление кода слоя AWG 2.0 (install.sh --update)
+    # ── обновление кода слоя AWG 2.0/3 (install.sh --update)
     if d == "upd:awg":
-        return await show(c, "🧬 <b>Обновление AWG 2.0</b>\n\n"
+        return await show(c, "🧬 <b>Обновление AWG 2.0/3</b>\n\n"
                           "Подтянет свежий код слоя и бота с GitHub. Обфускация, "
                           "порты и клиенты не меняются. В конце <b>бот "
                           "перезапустится</b> — итог пришлю после рестарта.",
@@ -1103,7 +1103,7 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         rc, _, err = start_bg_unit("az-awg-update", ["bash", "-c", script], logf)
         if rc != 0:
             return await show(c, f"❌ {html.escape(err)[:400]}", kb([back("upd:menu")]))
-        return await watch_unit(c, "az-awg-update", logf, "🧬 <b>Обновление AWG 2.0…</b>",
+        return await watch_unit(c, "az-awg-update", logf, "🧬 <b>Обновление AWG 2.0/3…</b>",
                                 "Если бот перезапустился — итог придёт отдельным сообщением.")
 
     # ── перенастройка обфускации кнопками (порты и клиентские ключи не меняются)
@@ -1255,11 +1255,11 @@ async def report_pending():
     # (сообщение, каким флагом пометить после успешной отправки)
     jobs = []
     if st.get("awg_upd") == "ok" and not st.get("awg_reported"):
-        jobs.append(("✅ <b>Слой AWG 2.0 обновлён</b>, бот перезапущен. "
+        jobs.append(("✅ <b>Слой AWG 2.0/3 обновлён</b>, бот перезапущен. "
                      "Клиенты и обфускация не менялись.",
                      dict(awg_reported=True, awg_upd=None)))
     elif st.get("awg_upd") == "fail" and not st.get("awg_reported"):
-        jobs.append(("❌ <b>Обновление AWG 2.0 не удалось.</b> "
+        jobs.append(("❌ <b>Обновление AWG 2.0/3 не удалось.</b> "
                      "Лог: /var/log/az-awg-update.log",
                      dict(awg_reported=True, awg_upd=None)))
     if not jobs:

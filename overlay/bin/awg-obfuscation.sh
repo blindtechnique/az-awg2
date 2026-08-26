@@ -35,11 +35,11 @@ V3=0
 # ── парсинг флагов ────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
     case "$1" in
-        --preset)    PRESET="$2"; shift 2; INTERACTIVE=0 ;;
-        --template)  TEMPLATE="$2"; shift 2; INTERACTIVE=0 ;;
-        --fp)        FP="$2"; shift 2 ;;
-        --host)      HOST="$2"; shift 2 ;;
-        --mtu)       MTU="$2"; shift 2 ;;
+        --preset)    PRESET="$2"; SET_PRESET=1; shift 2; INTERACTIVE=0 ;;
+        --template)  TEMPLATE="$2"; SET_TEMPLATE=1; shift 2; INTERACTIVE=0 ;;
+        --fp)        FP="$2"; SET_FP=1; shift 2 ;;
+        --host)      HOST="$2"; SET_HOST=1; shift 2 ;;
+        --mtu)       MTU="$2"; SET_MTU=1; shift 2 ;;
         --v3)        V3=1; INTERACTIVE=0; shift ;;
         --extreme)   EXTREME=1; shift ;;
         --apply)     APPLY=1; INTERACTIVE=0; shift ;;
@@ -77,11 +77,24 @@ show_current() {
 
 # ── регенерация: те же preset/template, новые I-пакеты и H-диапазоны ──────────
 if [ "$REGEN" = 1 ] && [ -f "$STATE_META" ]; then
+    # Из метаданных берём только то, чего НЕ задали в командной строке. Раньше
+    # они затирали всё подряд, и `--regenerate --preset medium` молча оставлял
+    # прежний пресет: человек видел в выводе не тот, что просил, и решал, что
+    # смена не сработала. Явный флаг должен быть сильнее сохранённого значения.
+    saved_preset="$PRESET"; saved_template="$TEMPLATE"
+    saved_fp="$FP"; saved_host="$HOST"; saved_mtu="$MTU"
     # shellcheck disable=SC1090
     . "$STATE_META"
-    PRESET="${META_PRESET:-medium}"; TEMPLATE="${META_TEMPLATE:-}"
-    FP="${META_FP:-chrome}"; HOST="${META_HOST:-}"; MTU="${META_MTU:-0}"
-    log "Регенерация профиля: preset=$PRESET template=${TEMPLATE:-default} (новые сигнатуры)"
+    [ "${SET_PRESET:-0}" = 1 ]   && PRESET="$saved_preset"     || PRESET="${META_PRESET:-medium}"
+    [ "${SET_TEMPLATE:-0}" = 1 ] && TEMPLATE="$saved_template" || TEMPLATE="${META_TEMPLATE:-}"
+    [ "${SET_FP:-0}" = 1 ]       && FP="$saved_fp"             || FP="${META_FP:-chrome}"
+    [ "${SET_HOST:-0}" = 1 ]     && HOST="$saved_host"         || HOST="${META_HOST:-}"
+    [ "${SET_MTU:-0}" = 1 ]      && MTU="$saved_mtu"           || MTU="${META_MTU:-0}"
+    if [ "${SET_PRESET:-0}" = 1 ] || [ "${SET_TEMPLATE:-0}" = 1 ]; then
+        log "Регенерация профиля: preset=$PRESET template=${TEMPLATE:-default} (задано флагами)"
+    else
+        log "Регенерация профиля: preset=$PRESET template=${TEMPLATE:-default} (новые сигнатуры)"
+    fi
     APPLY=1
 fi
 
