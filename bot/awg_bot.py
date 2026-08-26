@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-awg_bot.py — Telegram-бот управления AntiZapret-AWG 2.0.
+awg_bot.py — Telegram-бот управления AntiZapret-AWG (слои 2.0 и 3.0).
 Полностью кнопочный (единственная команда /start). Старается жить одним
 сообщением: каждое нажатие РЕДАКТИРУЕТ текущее сообщение, а не шлёт новое.
 Файлы (конфиги/QR/бэкап) — отдельными сообщениями (их редактировать нельзя).
@@ -1084,7 +1084,7 @@ async def on_cb(c: CallbackQuery, state: FSMContext):
         if rc != 0:
             return await show(c, f"❌ {html.escape(err)[:400]}", kb([back("upd:menu")]))
         return await watch_unit(c, "az-doall", logf, "📋 <b>Обновление списков…</b>",
-                                "✅ Списки обновлены (custom-хук обновил и правила AWG 2.0).")
+                                "✅ Списки обновлены (custom-хук обновил и правила слоя AmneziaWG).")
 
     # ── обновление кода слоя AWG 2.0/3 (install.sh --update)
     if d == "upd:awg":
