@@ -16,6 +16,11 @@
 #        bash <(curl -fsSL https://raw.githubusercontent.com/blindtechnique/az-awg2/beta/install.sh)
 #
 # Флаги слоя AmneziaWG:
+#   --preset3 X        пресет обфускации ОТДЕЛЬНО для слоя 3.0 (по умолчанию —
+#                      тот же, что у 2.0). Пресеты router и low объявлены без
+#                      header protection: на них слой 3.0 вырождается в 2.0.
+#   --template3 Y      мимикрия отдельно для слоя 3.0
+#   --awg3-ports A,V   порты слоя 3.0 вручную (antizapret3,vpn3)
 #   --awg-ports A,V    зафиксировать порты вручную (antizapret,vpn),
 #                      по умолчанию — рандомные свободные с закреплением
 #   --awg 2|3|both     какие версии протокола ставить (по умолчанию спросит).
@@ -56,6 +61,9 @@ STATE="/opt/antizapret-awg/install-state.env"
 INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
 INSTALL_BOT=0; REMOVE_BOT=0; UNINSTALL=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
+# Слой 3.0 настраивается отдельно: у него своя обфускация и свои порты. Пусто
+# означает «взять как у 2.0» — так ведут себя все установки, сделанные раньше.
+CLI_PRESET3=""; CLI_TEMPLATE3=""; CLI_PORTS3=""
 # какие версии протокола поднимать: 2 | 3 | both
 CLI_AWG_VER=""
 CLI_BOT_TOKEN=""; CLI_BOT_ADMINS=""
@@ -96,6 +104,9 @@ while [ $# -gt 0 ]; do
         --bot-token) CLI_BOT_TOKEN="$2"; shift 2 ;;
         --bot-admins) CLI_BOT_ADMINS="$2"; shift 2 ;;
         --awg-ports) CLI_PORTS="$2"; shift 2 ;;
+        --awg3-ports) CLI_PORTS3="$2"; shift 2 ;;
+        --preset3) CLI_PRESET3="$2"; shift 2 ;;
+        --template3) CLI_TEMPLATE3="$2"; shift 2 ;;
         --no-bot) NO_BOT=1; shift ;;
         --reconfigure) RECONFIGURE=1; shift ;;
         --awg) CLI_AWG_VER="$2"; shift 2 ;;
@@ -256,6 +267,24 @@ parse_cli_ports() {  # "1234,5678" → AZ_PORT_CHOICE/VPN_PORT_CHOICE
     fi
 }
 
+parse_cli_ports3() {  # "1234,5678" → AZ3_PORT_CHOICE/VPN3_PORT_CHOICE
+    AZ3_PORT_CHOICE="${CLI_PORTS3%%,*}"; VPN3_PORT_CHOICE="${CLI_PORTS3##*,}"
+    if ! valid_port "$AZ3_PORT_CHOICE" || ! valid_port "$VPN3_PORT_CHOICE" \
+        || [ "$AZ3_PORT_CHOICE" = "$VPN3_PORT_CHOICE" ]; then
+        log "❌ --awg3-ports: нужно два разных порта 1-65535 через запятую, напр. 34567,45678"
+        exit 2
+    fi
+    # Пересечение со слоем 2.0 поймать здесь дешевле, чем потом ловить
+    # «Address already in use» на старте второго интерфейса.
+    local p
+    for p in "$AZ3_PORT_CHOICE" "$VPN3_PORT_CHOICE"; do
+        if [ "$p" = "${AZ_PORT_CHOICE:-}" ] || [ "$p" = "${VPN_PORT_CHOICE:-}" ]; then
+            log "❌ порт $p уже занят слоем 2.0 — у слоёв должны быть разные порты"
+            exit 2
+        fi
+    done
+}
+
 ask_port() {  # ask_port <подпись> <исключить> → PORT_ANSWER ("" = авто)
     local label="$1" excl="$2" p
     while :; do
@@ -277,6 +306,7 @@ ask_port() {  # ask_port <подпись> <исключить> → PORT_ANSWER (
 collect_choices() {
     AZ_PORT_CHOICE=""; VPN_PORT_CHOICE=""
     [ -n "$CLI_PORTS" ] && parse_cli_ports
+    [ -n "$CLI_PORTS3" ] && parse_cli_ports3
     if [ -f "$STATE" ] && [ "$RECONFIGURE" != 1 ] && [ -z "$CLI_PRESET" ]; then
         . "$STATE"
         # порты при повторном запуске всегда берутся из services.env (закреплены) —
@@ -285,6 +315,7 @@ collect_choices() {
         return
     fi
     local PRESET="medium" TEMPLATE="" FP="chrome" MTU=1320 HOST="" BOT_INSTALL=0 BOT_TOKEN="" BOT_ADMINS=""
+    local PRESET3="" TEMPLATE3=""      # пусто = как у слоя 2.0
     local AWG_VER="${CLI_AWG_VER:-}"
 
     # ── версия протокола ────────────────────────────────────────────────────
@@ -310,12 +341,30 @@ collect_choices() {
 
     if [ -n "$CLI_PRESET" ]; then
         PRESET="$CLI_PRESET"; TEMPLATE="$CLI_TEMPLATE"; FP="${CLI_FP:-chrome}"
+        PRESET3="$CLI_PRESET3"; TEMPLATE3="$CLI_TEMPLATE3"
     else
         echo "═══════════════════════════════════════════════════════════════"
         echo "  Обфускация AmneziaWG 2.0 — интенсивность"
         echo "   1) router  2) low  3) medium [по умолч.]  4) high  5) paranoid"
         echo "   4) high — если провайдер режет WireGuard; 5) paranoid — жёсткие блокировки РФ"
         read -rp "Выбор [3]: " x; case "${x:-3}" in 1) PRESET=router;;2) PRESET=low;;4) PRESET=high;;5) PRESET=paranoid;;*) PRESET=medium;; esac
+        # У слоя 3.0 свой профиль, и «интенсивность» значит для него другое:
+        # router и low объявлены без header protection, паддинга и таймингов,
+        # то есть на них 3.0 отдаёт ровно то же, что 2.0, и смысла в отдельном
+        # слое не остаётся. Поэтому спрашиваем отдельно и говорим об этом прямо.
+        if [ "$AWG_VER" != 2 ]; then
+            echo
+            echo "  Обфускация AmneziaWG 3.0 — отдельно от слоя 2.0"
+            echo "   1) router  2) low  3) medium [по умолч.]  4) high  5) paranoid"
+            echo "   ⚠️ router и low — БЕЗ header protection, паддинга и таймингов:"
+            echo "      слой 3.0 на них работает как 2.0. Полный 3.0 — от medium."
+            read -rp "Выбор [3]: " x3
+            case "${x3:-3}" in 1) PRESET3=router;;2) PRESET3=low;;4) PRESET3=high;;5) PRESET3=paranoid;;*) PRESET3=medium;; esac
+            case "$PRESET3" in
+                router|low)
+                    echo "   Выбран $PRESET3: слой 3.0 будет без header protection." ;;
+            esac
+        fi
         echo "  Мимикрия (под что маскировать): 0)авто 1)quic 2)tls 3)web 4)voip 5)dns 6)mixed"
         echo "   не уверен — '3) web'"
         read -rp "Выбор [0]: " y; case "${y:-0}" in 1) TEMPLATE=quic;;2) TEMPLATE=tls;;3) TEMPLATE=web;;4) TEMPLATE=voip;;5) TEMPLATE=dns;;6) TEMPLATE=mixed;;*) TEMPLATE="";; esac
@@ -343,6 +392,14 @@ collect_choices() {
             AZ_PORT_CHOICE="$PORT_ANSWER"
             ask_port "vpn (полный туннель)" "$AZ_PORT_CHOICE"
             VPN_PORT_CHOICE="$PORT_ANSWER"
+            # У слоя 3.0 свои интерфейсы и свои порты: спрашиваем их отдельно,
+            # иначе задать их вручную было нельзя вовсе — всегда рандом.
+            if [ "$AWG_VER" != 2 ]; then
+                ask_port "antizapret3 (split, слой 3.0)" "$AZ_PORT_CHOICE"
+                AZ3_PORT_CHOICE="$PORT_ANSWER"
+                ask_port "vpn3 (полный, слой 3.0)" "$AZ3_PORT_CHOICE"
+                VPN3_PORT_CHOICE="$PORT_ANSWER"
+            fi
         fi
     fi
     if [ "$NO_BOT" = 0 ]; then
@@ -364,6 +421,8 @@ collect_choices() {
     cat > "$STATE" <<EOF
 AWG_PRESET='$PRESET'
 AWG_TEMPLATE='$TEMPLATE'
+AWG_PRESET3='$PRESET3'
+AWG_TEMPLATE3='$TEMPLATE3'
 AWG_FP='$FP'
 AWG_BOT_INSTALL='$BOT_INSTALL'
 AWG_BOT_TOKEN='$BOT_TOKEN'
@@ -559,6 +618,9 @@ remove_bot_only() {
 awg_layer() {
     [ -f "$STATE" ] && . "$STATE"
     local P="${AWG_PRESET:-medium}" T="${AWG_TEMPLATE:-}" F="${AWG_FP:-chrome}"
+    # Пусто — значит слой 3.0 настраивается как 2.0. Так ведут себя установки,
+    # сделанные до появления раздельных пресетов: у них в state только AWG_PRESET.
+    local P3="${AWG_PRESET3:-}" T3="${AWG_TEMPLATE3:-}"
     local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}" V="${AWG_VER:-both}"
     case "$V" in
         2)    log "Слой AmneziaWG 2.0 параллельно ванили (обфускация $P/${T:-default}, MTU $M)…" ;;
@@ -571,7 +633,10 @@ awg_layer() {
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
         ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
-        ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}
+        ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"} \
+        ${P3:+--preset3 "$P3"} ${T3:+--template3 "$T3"} \
+        ${AZ3_PORT_CHOICE:+--az3-port "$AZ3_PORT_CHOICE"} \
+        ${VPN3_PORT_CHOICE:+--vpn3-port "$VPN3_PORT_CHOICE"}
     setup_stats
     setup_bot
     echo
@@ -630,6 +695,7 @@ migrate_layer() {
     read -rp "Продолжить миграцию? [y/N]: " a
     case "${a:-N}" in y|Y) ;; *) log "Отменено"; exit 0 ;; esac
     [ -n "$CLI_PORTS" ] && parse_cli_ports
+    [ -n "$CLI_PORTS3" ] && parse_cli_ports3
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --migrate \
         ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
         ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"}

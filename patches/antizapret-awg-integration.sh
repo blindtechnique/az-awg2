@@ -19,12 +19,18 @@
 # Флаги:
 #   --preset X --template Y --fp Z --mtu N --host H   параметры обфускации
 #   --az-port N / --vpn-port N   зафиксировать порты вручную (иначе рандом)
+#   --preset3 X --template3 Y    обфускация ОТДЕЛЬНО для слоя 3.0 (пусто = как 2.0)
+#   --az3-port N / --vpn3-port N порты слоя 3.0 вручную (иначе рандом)
 #   --update    обновить код/сервисы БЕЗ смены обфускации и портов
 #   --migrate   миграция старых режимов (replace/keep) на parallel
 set -euo pipefail
 
 PRESET="medium"; TEMPLATE=""; FP="chrome"; MTU=1320; HOST=""
 UPDATE=0; MIGRATE=0; CLI_AZ_PORT=""; CLI_VPN_PORT=""
+# Слой 3.0 настраивается отдельно. Пусто = «как у слоя 2.0»: именно так вели
+# себя все установки до появления раздельных пресетов, и менять им профиль
+# молча нельзя. Объявляем здесь, потому что скрипт работает под set -u.
+PRESET3=""; TEMPLATE3=""; CLI_AZ3_PORT=""; CLI_VPN3_PORT=""
 # какие версии протокола поднимать: 2 | 3 | both
 AWG_VER="both"
 # версии апстрима для слоя 3.0 (переопределяются переменными окружения)
@@ -48,6 +54,10 @@ while [ $# -gt 0 ]; do
         --host) HOST="$2"; shift 2 ;;
         --az-port) CLI_AZ_PORT="$2"; shift 2 ;;
         --vpn-port) CLI_VPN_PORT="$2"; shift 2 ;;
+        --preset3) PRESET3="$2"; shift 2 ;;
+        --template3) TEMPLATE3="$2"; shift 2 ;;
+        --az3-port) CLI_AZ3_PORT="$2"; shift 2 ;;
+        --vpn3-port) CLI_VPN3_PORT="$2"; shift 2 ;;
         --update) UPDATE=1; shift ;;
         --migrate) MIGRATE=1; shift ;;
         # legacy-флаг старого установщика: parallel теперь единственный режим
@@ -328,8 +338,11 @@ plan_services() {
         pinned_az3="$(. "$SERVICES" 2>/dev/null; echo "${AZ3_PORT:-}")"
         pinned_vpn3="$(. "$SERVICES" 2>/dev/null; echo "${VPN3_PORT:-}")"
     fi
-    AZ3_PORT="${pinned_az3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT")}"
-    VPN3_PORT="${pinned_vpn3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT" "$AZ3_PORT")}"
+    # Порядок важен: явно заданный порт сильнее закреплённого, закреплённый —
+    # сильнее случайного. Раньше порты 3.0 всегда были случайными, задать их
+    # было нечем.
+    AZ3_PORT="${CLI_AZ3_PORT:-${pinned_az3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT")}}"
+    VPN3_PORT="${CLI_VPN3_PORT:-${pinned_vpn3:-$(pick_random_port "$AZ_PORT" "$VPN_PORT" "$AZ3_PORT")}}"
 
     # какие слои считаем установленными
     case "$AWG_VER" in
@@ -425,7 +438,10 @@ build_interfaces3() {
 gen_obfuscation3() {
     log "Профиль обфускации 3.0: preset=$PRESET template=${TEMPLATE:-default}"
     AWG3_AZ_CONF="$AWG_DIR/${AZ3_IFACE}.conf" AWG3_VPN_CONF="$AWG_DIR/${VPN3_IFACE}.conf" \
-        "$DEST/awg-obfuscation.sh" --v3 --preset "$PRESET" ${TEMPLATE:+--template "$TEMPLATE"} \
+        # Пусто — берём настройки слоя 2.0: так вели себя все установки до
+        # появления раздельных пресетов, и молча менять им профиль нельзя.
+        local p3="${PRESET3:-$PRESET}" t3="${TEMPLATE3:-$TEMPLATE}"
+        "$DEST/awg-obfuscation.sh" --v3 --preset "$p3" ${t3:+--template "$t3"} \
         --fp "$FP" --mtu "$MTU3" ${HOST:+--host "$HOST"} --apply
 }
 
