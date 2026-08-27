@@ -634,7 +634,10 @@ awg_layer() {
     # Через ${VAR:+…} нельзя: RECONFIGURE это 0 или 1, оба непустые, и
     # флаг уезжал бы вниз ВСЕГДА — то есть ровно наоборот.
     local rec=""
-    if [ "$RECONFIGURE" = 1 ]; then rec=--reconfigure; fi
+    # Явный --preset — тоже просьба сменить профиль: он минует меню (см. main),
+    # и без этой ветки новый пресет попадал бы в install-state.env, а
+    # obfuscation.env оставался прежним — `awg-obfuscation --show` врал бы.
+    if [ "$RECONFIGURE" = 1 ] || [ -n "$CLI_PRESET" ]; then rec=--reconfigure; fi
     AWG_REPO_BRANCH="$REPO_BRANCH" \
     bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" $rec \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
@@ -801,6 +804,10 @@ menu_existing() {
             log "   сохраняются). Розданные клиентам конфиги придётся раздать заново."
             ask_yn "Продолжить? [y/N]: " n || { log "Отменено"; exit 0; }
             collect_choices   # STATE есть → ответы берутся сохранённые, без вопросов
+            # Пункт обещает НОВЫЙ профиль и уже взял подтверждение. Без этого
+            # флага awg_layer уходит в --reapply и молча ничего не меняет —
+            # владелец соглашается отключить всех и не получает ничего.
+            RECONFIGURE=1
             awg_layer
             ;;
         3)

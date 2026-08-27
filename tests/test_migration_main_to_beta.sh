@@ -261,6 +261,64 @@ else
 fi
 
 echo
+echo "══ Пути, которые ПРОСЯТ новый профиль, его получают ════════════════════"
+# Обратная сторона --reapply: если бы он поглотил и эти пути, вместо «конфиги
+# не ломаются» вышло бы «профиль не меняется никогда», и ротация обфускации
+# при блокировках тихо перестала бы работать.
+
+# 1) решение о флаге — вырезаем из настоящего awg_layer
+dec="$(grep -n 'rec=--reconfigure; fi' install.sh | head -1 | cut -d: -f2-)"
+if [ -z "$dec" ]; then
+    echo "  ✘ в awg_layer нет решения о --reconfigure"; fail=1
+else
+    # переменные ниже читает вырезанный из установщика кусок под eval —
+    # статически такую связь не увидеть
+    # shellcheck disable=SC2034
+    r() { ( RECONFIGURE="$1"; CLI_PRESET="$2"; rec=""; eval "$dec"; echo "${rec:-нет}" ); }
+    [ "$(r 0 '')"    = "нет" ]           && echo "  ✔ обычное обновление профиль не трогает" \
+        || { echo "  ✘ обычное обновление перевыпускает профиль"; fail=1; }
+    [ "$(r 1 '')"    = "--reconfigure" ] && echo "  ✔ --reconfigure выпускает новый" \
+        || { echo "  ✘ --reconfigure не доходит до обфускатора"; fail=1; }
+    [ "$(r 0 high)" = "--reconfigure" ] && echo "  ✔ явный --preset тоже выпускает новый" \
+        || { echo "  ✘ --preset молча не меняет профиль"; fail=1; }
+fi
+
+# 2) пункт меню «новый профиль с текущими настройками» обязан ставить флаг
+menu="$(sed -n '/^menu_existing()/,/^}/p' install.sh)"
+got="$(printf '%s\n' "$menu" | awk '
+    /^        2\)/      {on=1}
+    on && /RECONFIGURE=1/ {print "yes"; exit}
+    on && /^        3\)/  {exit}')"
+if [ "$got" = yes ]; then
+    echo "  ✔ пункт 2 меню выставляет RECONFIGURE=1"
+else
+    echo "  ✘ пункт 2 обещает новый профиль, но флага не ставит — тихий отказ"; fail=1
+fi
+
+echo
+echo "══ Подсети закрепляются так же, как порты ══════════════════════════════"
+pin="$(sed -n '/^    local pin_az="" pin_vpn=""$/,/^    VPN_SUBNET=/p' \
+       patches/antizapret-awg-integration.sh)"
+if [ -z "$pin" ]; then
+    echo "  ✘ подсети не закрепляются — переезд ванили уведёт сервер от клиентов"; fail=1
+else
+    p() {  # p <есть services.env: 1|0> → AZ_SUBNET
+        local d; d="$(mktemp -d)"
+        [ "$1" = 1 ] && printf 'AZ_SUBNET=10.29.9\nVPN_SUBNET=10.28.9\n' > "$d/services.env"
+        # shellcheck disable=SC2034
+        ( SERVICES="$d/services.env"; az_base=10.29.99; vpn_base=10.28.99
+          eval "$pin"; echo "$AZ_SUBNET" )
+        rm -rf "$d"
+    }
+    [ "$(p 1)" = "10.29.9" ] \
+        && echo "  ✔ закреплённая подсеть переживает переезд ванили" \
+        || { echo "  ✘ подсеть пересчитана заново — у клиентов остался старый Address"; fail=1; }
+    [ "$(p 0)" = "10.29.100" ] \
+        && echo "  ✔ на первой установке считается от ванили" \
+        || { echo "  ✘ на первой установке подсеть не вычисляется: $(p 0)"; fail=1; }
+fi
+
+echo
 echo "══ А настоящую смену профиля тот же счётчик обязан заметить ════════════"
 D="$WORK/changed"; cp -r "$A" "$D"; rm -f "$D/regen.log"
 sed -i "s/^AWG_Jc='4'/AWG_Jc='7'/" "$D/etc/obfuscation.env"

@@ -297,8 +297,20 @@ plan_services() {
     # DNS = внутренний knot AntiZapret на шлюзе ВАНИЛЬНОЙ antizapret-подсети
     SERVER_DNS="${az_base}.1"
 
-    AZ_IFACE=antizapret-awg; AZ_SUBNET="${az_base%.*}.$(( ${az_base##*.} + 1 ))"
-    VPN_IFACE=vpn-awg;       VPN_SUBNET="${vpn_base%.*}.$(( ${vpn_base##*.} + 1 ))"
+    AZ_IFACE=antizapret-awg;  VPN_IFACE=vpn-awg
+    # Подсети закрепляем так же, как порты: от них зависят Address и AllowedIPs
+    # всех выданных конфигов. Пересчёт из конфига ванили на каждом прогоне
+    # означал бы, что её переезд на другой диапазон уводит сервер, а у клиентов
+    # остаётся прежний адрес — regen-all это не чинит, он адреса не трогает.
+    local pin_az="" pin_vpn=""
+    if [ -f "$SERVICES" ]; then
+        # shellcheck disable=SC1090
+        pin_az="$(. "$SERVICES" 2>/dev/null; echo "${AZ_SUBNET:-}")"
+        # shellcheck disable=SC1090
+        pin_vpn="$(. "$SERVICES" 2>/dev/null; echo "${VPN_SUBNET:-}")"
+    fi
+    AZ_SUBNET="${pin_az:-${az_base%.*}.$(( ${az_base##*.} + 1 ))}"
+    VPN_SUBNET="${pin_vpn:-${vpn_base%.*}.$(( ${vpn_base##*.} + 1 ))}"
     MODE=parallel
 
     # Слой 3.0 — ещё +1 к третьему октету, чтобы не пересечься со слоем 2.0.
