@@ -193,6 +193,98 @@ for f in "$INTEG" install.sh overlay/bin/client-awg.sh; do
     fi
 done
 
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "7. Миграция переживает хост без маршрута по умолчанию"
+# Статус подстановки — это статус всего конвейера, и под pipefail он приезжает
+# от ip (rc=2 без маршрута по умолчанию), а не от grep. set -e убивал
+# do_migrate прямо здесь — уже ПОСЛЕ того, как конфиги переименованы и в
+# services.env лёг MODE=parallel. Повторный --migrate после этого коротит на
+# «уже parallel», и ванильный редирект не вернётся никогда.
+DL="$(grep -F 'difc="$(ip route get' "$INTEG")"
+if [ -z "$DL" ]; then
+    bad "не нашли определение difc в do_migrate" "мерить нечего"
+else
+    out="$(bash -c "set -euo pipefail
+        ip() { echo 'RTNETLINK answers: Network is unreachable' >&2; return 2; }
+        difc=''
+$DL
+        echo \"ЖИВ:[\$difc]\"" 2>/dev/null)" || out="ОТКАЗ:$?"
+    [ "$out" = "ЖИВ:[]" ] && ok "пустой difc доезжает до заготовленной ветки" \
+        || bad "миграция умирает на определении интерфейса" "вернулось «$out»"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "8. Конфиг без PrivateKey не убивает сборку интерфейса"
+# Конфиг перезаписывается усекающим редиректом; прерывание в этом окне
+# оставляет файл без строки PrivateKey. Ветки «ключ отсутствует или битый»
+# написаны ровно на этот случай — и были недостижимы, потому что присваивание
+# умирало раньше.
+for fn in _extract_key _extract_key3; do
+    EK="$(grep -F "${fn}() {" "$INTEG")"
+    if [ -z "$EK" ]; then
+        bad "не нашли $fn в интеграции" "мерить нечего"
+        continue
+    fi
+    conf="$WORK/trunc.conf"
+    printf '# AntiZapret-AWG\nAddress = 10.29.9.1/24\n' > "$conf"
+    out="$(bash -c "set -euo pipefail
+$EK
+        priv=\"\$($fn '$conf')\"
+        echo \"ЖИВ:[\$priv]\"" 2>&1)" || out="ОТКАЗ:$?"
+    [ "$out" = "ЖИВ:[]" ] && ok "$fn отдаёт пустую строку вместо смерти" \
+        || bad "$fn роняет прогон на усечённом конфиге" "вернулось «$out»"
+    # И существующий ключ обязан читаться по-прежнему
+    printf 'PrivateKey = aGVsbG8=\n' > "$conf"
+    out="$(bash -c "set -euo pipefail
+$EK
+        echo \"[\$($fn '$conf')]\"" 2>&1)" || out="ОТКАЗ"
+    [ "$out" = "[aGVsbG8=]" ] && ok "$fn читает существующий ключ" \
+        || bad "$fn сломал чтение ключа" "вышло «$out»"
+done
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "9. Определение адреса доезжает до запасного варианта"
+# Правый операнд || — последняя команда списка, поэтому set -e срабатывает на
+# ней в полную силу: отказ ip обрывал скрипт, не доходя до api.ipify.org ниже.
+HL="$(grep -F 'h="$(ip route get' overlay/bin/client-awg.sh)"
+if [ -z "$HL" ]; then
+    bad "не нашли определение адреса в client-awg.sh" "мерить нечего"
+else
+    out="$(bash -c "set -euo pipefail
+        ip() { return 2; }
+        h=''
+$HL
+        echo \"ЖИВ:[\$h]\"" 2>/dev/null)" || out="ОТКАЗ:$?"
+    [ "$out" = "ЖИВ:[]" ] && ok "отказ ip не обрывает выдачу клиента" \
+        || bad "выдача клиента умирает на определении адреса" "вернулось «$out»"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "10. Пароль архива доезжает до openssl"
+# openssl читает пароль ИЗ ОКРУЖЕНИЯ (-pass env:…), а read создаёт обычную
+# переменную оболочки. Без export введённый с клавиатуры ВЕРНЫЙ пароль давал
+# «неверный пароль или битый архив»: интерактивное восстановление
+# зашифрованного архива не работало никогда.
+if sed -n '/read -rsp "Пароль архива/,+12p' overlay/bin/awg-backup.sh | grep -q 'export BACKUP_PASS'; then
+    ok "введённый с клавиатуры пароль уезжает в окружение"
+else
+    bad "пароль из read не экспортируется" "openssl его не увидит"
+fi
+if command -v openssl >/dev/null 2>&1; then
+    W2="$WORK/enc"; mkdir -p "$W2"; echo "PrivateKey = SECRET" > "$W2/a"
+    ( export BACKUP_PASS=hunter2
+      openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+          -in "$W2/a" -out "$W2/a.enc" -pass env:BACKUP_PASS 2>/dev/null )
+    # Так выглядит переменная после read: обычная, не экспортированная.
+    out="$(bash -c "BACKUP_PASS=hunter2
+        openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in '$W2/a.enc' -out '$W2/a.dec' -pass env:BACKUP_PASS 2>&1" || true)"
+    case "$out" in
+        *"No environment variable"*) ok "и без export openssl её действительно не видит" ;;
+        *) bad "проверка не воспроизвела причину" "вышло «$out»" ;;
+    esac
+fi
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail

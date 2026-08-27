@@ -90,7 +90,11 @@ server_pubkey() {
 server_host() {
     local h=""
     [ -f /root/antizapret/setup ] && h="$(. /root/antizapret/setup 2>/dev/null; echo "${WIREGUARD_HOST:-}")"
-    [ -n "$h" ] || h="$(ip route get 1.2.3.4 2>/dev/null | grep -oP 'src \K\S+')"
+    # `|| true` внутри подстановки: правый операнд || — последняя команда
+    # списка, поэтому set -e срабатывает на ней в полную силу, и отказ ip или
+    # грепа без совпадения обрывал скрипт, не доходя до запасного варианта
+    # через api.ipify.org ниже.
+    [ -n "$h" ] || h="$(ip route get 1.2.3.4 2>/dev/null | grep -oP 'src \K\S+' || true)"
     [ -n "$h" ] || h="$(curl -s https://api.ipify.org)"
     echo "$h"
 }

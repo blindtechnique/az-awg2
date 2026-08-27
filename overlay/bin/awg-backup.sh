@@ -79,6 +79,15 @@ do_restore() {
     if [ "${1:-}" != "${1%.enc}" ]; then
         if [ -z "${BACKUP_PASS:-}" ]; then
             [ -r /dev/tty ] && { read -rsp "Пароль архива: " BACKUP_PASS < /dev/tty; echo >&2; }
+            # export обязателен: openssl читает пароль ИЗ ОКРУЖЕНИЯ
+            # (-pass env:…), а read создаёт обычную переменную оболочки.
+            # Без него введённый с клавиатуры правильный пароль давал
+            # «No environment variable BACKUP_PASS» и, с заглушённым stderr,
+            # сообщение «неверный пароль или битый архив». То есть
+            # восстановление зашифрованного архива в интерактиве не работало
+            # никогда — работал только путь BACKUP_PASS=… в окружении.
+            # На стороне создания архива export уже стоит, ниже по файлу.
+            export BACKUP_PASS
         fi
         [ -n "${BACKUP_PASS:-}" ] || { err "нужен пароль для $1"; exit 2; }
         _dec="$(mktemp /tmp/awg-restore.XXXXXX.tar.gz)"

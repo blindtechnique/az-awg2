@@ -441,7 +441,13 @@ EOF
 build_iface3() {
     local name="$1" subnet="$2" port="$3"
     local conf="$AWG_DIR/${name}.conf" priv="" peers=""
-    _extract_key3() { grep '^PrivateKey' "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \t'; }
+    # `|| true` обязателен: код функции — это код конвейера, а grep без
+    # совпадения отдаёт 1. Присваивания ниже — простые, в теле if, поэтому
+    # маскировки нет: build_iface умирал молча, и заготовленные ветки
+    # «ключ отсутствует или битый» были недостижимы именно тогда, когда нужны
+    # (конфиг перезаписывается усекающим редиректом — прерывание в этом окне
+    # оставляет файл без строки PrivateKey). Пустую строку отбракует _valid_key.
+    _extract_key3() { grep '^PrivateKey' "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \t' || true; }
     _valid_key3()   { [ -n "$1" ] && printf '%s' "$1" | awg pubkey >/dev/null 2>&1; }
     if [ -f "$conf" ]; then
         priv="$(_extract_key3 "$conf")"
@@ -539,7 +545,13 @@ build_iface() {
     local name="$1" subnet="$2" port="$3" src_wg="$4"
     local conf="$AWG_DIR/${name}.conf" priv=""
     # извлечение ключа через cut (сохраняет хвостовой '=' base64) + валидация
-    _extract_key() { grep '^PrivateKey' "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \t'; }
+    # `|| true` обязателен: код функции — это код конвейера, а grep без
+    # совпадения отдаёт 1. Присваивания ниже — простые, в теле if, поэтому
+    # маскировки нет: build_iface умирал молча, и заготовленные ветки
+    # «ключ отсутствует или битый» были недостижимы именно тогда, когда нужны
+    # (конфиг перезаписывается усекающим редиректом — прерывание в этом окне
+    # оставляет файл без строки PrivateKey). Пустую строку отбракует _valid_key.
+    _extract_key() { grep '^PrivateKey' "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \t' || true; }
     _valid_key()   { [ -n "$1" ] && printf '%s' "$1" | awg pubkey >/dev/null 2>&1; }
 
     if [ -f "$conf" ]; then priv="$(_extract_key "$conf")"; fi
@@ -698,7 +710,14 @@ do_migrate() {
     # и добавлял ACCEPT 52xxx — возвращаем ваниль в исходное состояние
     if [ "$old_mode" = keep ]; then
         local up=/root/antizapret/up.sh difc
-        difc="$(ip route get 1.2.3.4 2>/dev/null | grep -oP 'dev \K\S+')"
+        # `|| true`: статус подстановки — это статус всего конвейера, и под
+        # pipefail он приезжает от ip (rc=2 на хосте без маршрута по умолчанию)
+        # или от grep без совпадения. set -e убивал do_migrate прямо здесь —
+        # уже ПОСЛЕ того, как конфиги переименованы и в services.env лёг
+        # MODE=parallel. Повторный --migrate после этого коротит на «уже
+        # parallel», и ванильный редирект не вернётся никогда. Пустой difc
+        # законен: ветка `if [ -n "$difc" ]` ниже написана ровно на него.
+        difc="$(ip route get 1.2.3.4 2>/dev/null | grep -oP 'dev \K\S+' || true)"
         if [ -f "$up" ] && ! grep -q 'dport 52443 -j REDIRECT' "$up"; then
             # якорь — родной комментарий ванили (legacy-патч удалял только iptables-строки).
             # Вставка после якоря вида '/dport 580/a' НЕЛЬЗЯ: она попадает внутрь
