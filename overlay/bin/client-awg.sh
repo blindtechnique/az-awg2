@@ -101,7 +101,13 @@ next_ip() {
         | grep -oE '[0-9]+$' || true)"
     local i
     for i in $(seq 2 254); do
-        echo "$used" | grep -qx "$i" || { echo "${SUBNET}.${i}"; return 0; }
+        # Без трубы: `echo | grep -q` под pipefail отдаёт 141 при совпадении в
+        # начале списка, и занятый адрес выдавался бы как свободный — двум
+        # клиентам достался бы один IP.
+        case $'\n'"$used"$'\n' in
+            *$'\n'"$i"$'\n'*) ;;              # занят — берём следующий
+            *) echo "${SUBNET}.${i}"; return 0 ;;
+        esac
     done
     die "Свободные IP в ${SUBNET}.0/24 закончились"
 }
@@ -220,7 +226,13 @@ del_client() {
     resolve_service "$svc"
     local outdir="${CLIENT_DIR}/${svc}" conf="${CLIENT_DIR}/${svc}/${svc}-${name}-am.conf"
     [ -f "$conf" ] || die "Клиент '$name' ($svc) не найден"
-    local cpub; cpub="$(grep '^PrivateKey' "$conf" | head -1 | cut -d= -f2- | tr -d ' \t' | awg pubkey)"
+    # Раньше ключ читался одной трубой прямо в `awg pubkey`. Под pipefail
+    # конфиг без PrivateKey ронял всю команду молча: grep отдавал 1, и до
+    # сообщения дело не доходило. Читаем отдельно и говорим, что не так.
+    local cpriv cpub
+    cpriv="$(grep '^PrivateKey' "$conf" | head -1 | cut -d= -f2- | tr -d ' \t' || true)"
+    [ -n "$cpriv" ] || die "в конфиге '$conf' нет PrivateKey — по ключу удалять нечего"
+    cpub="$(printf '%s' "$cpriv" | awg pubkey)"
     awg set "$IFACE" peer "$cpub" remove 2>/dev/null || true
     # вычистить [Peer]-блок клиента из серверного конфига по PublicKey
     python3 - "$SERVER_CONF" "$cpub" <<'PY'

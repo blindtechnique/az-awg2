@@ -79,6 +79,9 @@ head_ "Матрица переходов"
 run "из какого состояния каким действием и что при этом сохраняется" \
     bash tests/test_transitions.sh
 
+head_ "Ловушки bash"
+run "занятые порты и адреса, конфиг без ключа"     bash tests/test_bash_traps.sh
+
 head_ "Сухой прогон"
 run "--plan показывает то, что будет, и не трогает диск" \
     bash tests/test_plan.sh
