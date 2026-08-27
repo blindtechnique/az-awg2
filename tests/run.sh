@@ -22,6 +22,15 @@ ok()   { printf '  \033[1;32m✔\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[1;31m✘\033[0m %s\n' "$1"; fail=$((fail+1)); FAILED="$FAILED $1"; }
 head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# Логи GitHub Actions открываются только после входа, а аннотации публичны.
+# Поэтому причину отказа дублируем аннотацией: она видна и в pull request,
+# и снаружи, без доступа к логам.
+annotate() {  # annotate <набор> <вывод>
+    [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+    printf '::error title=%s::%s\n' "$1" \
+        "$(printf '%s' "$2" | sed 's/%/%25/g; s/\r/%0D/g' | awk '{printf "%s%%0A", $0}')"
+}
+
 run() {  # run <имя> <команда…>
     local name="$1"; shift
     case "$name" in
@@ -36,6 +45,7 @@ run() {  # run <имя> <команда…>
         [ "$rc" = 124 ] && out="$out"$'\n'"(превышен лимит 300 с)"
         bad "$name"
         printf '%s\n' "$out" | tail -25 | sed 's/^/      /'
+        annotate "$name" "$(printf '%s\n' "$out" | tail -25)"
     fi
 }
 

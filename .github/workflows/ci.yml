@@ -13,7 +13,7 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Проект ломается на CRLF: bash падает уже на первой строке с
       # «invalid option name: pipefail». Ловим до того, как это доедет до
