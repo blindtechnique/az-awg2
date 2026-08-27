@@ -629,8 +629,14 @@ awg_layer() {
     esac
     # ветку передаём вниз: integration запишет её в .layer-branch, и проверка
     # обновлений будет сравнивать с той же веткой, откуда ставили
+    # --reconfigure передаём вниз: без него интеграция не отличала бы
+    # «обнови код» от «выпусти новый профиль» и перевыпускала бы всегда.
+    # Через ${VAR:+…} нельзя: RECONFIGURE это 0 или 1, оба непустые, и
+    # флаг уезжал бы вниз ВСЕГДА — то есть ровно наоборот.
+    local rec=""
+    if [ "$RECONFIGURE" = 1 ]; then rec=--reconfigure; fi
     AWG_REPO_BRANCH="$REPO_BRANCH" \
-    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" \
+    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" $rec \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
         ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
         ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"} \

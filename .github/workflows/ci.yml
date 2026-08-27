@@ -13,7 +13,11 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 — набор миграции сравнивает текущую ветку с
+      # origin/main, а неглубокий checkout тянет только саму ветку
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # Проект ломается на CRLF: bash падает уже на первой строке с
       # «invalid option name: pipefail». Ловим до того, как это доедет до

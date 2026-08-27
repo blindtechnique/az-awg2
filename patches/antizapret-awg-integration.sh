@@ -30,6 +30,7 @@ UPDATE=0; MIGRATE=0; CLI_AZ_PORT=""; CLI_VPN_PORT=""
 # Слой 3.0 настраивается отдельно. Пусто = «как у слоя 2.0»: именно так вели
 # себя все установки до появления раздельных пресетов, и менять им профиль
 # молча нельзя. Объявляем здесь, потому что скрипт работает под set -u.
+RECONFIGURE=0
 PRESET3=""; TEMPLATE3=""; CLI_AZ3_PORT=""; CLI_VPN3_PORT=""
 # какие версии протокола поднимать: 2 | 3 | both
 AWG_VER="both"
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
         --az3-port) CLI_AZ3_PORT="$2"; shift 2 ;;
         --vpn3-port) CLI_VPN3_PORT="$2"; shift 2 ;;
         --update) UPDATE=1; shift ;;
+        --reconfigure) RECONFIGURE=1; shift ;;
         --migrate) MIGRATE=1; shift ;;
         # legacy-флаг старого установщика: parallel теперь единственный режим
         --keep-wireguard) shift ;;
@@ -442,10 +444,16 @@ gen_obfuscation3() {
     # Пояснения — строго ДО строки с переносом: комментарий между `\` и
     # командой рвёт перенос, и префикс окружения становится обычным
     # присваиванием в текущей оболочке, до дочернего процесса не доходя.
-    log "Профиль обфускации 3.0: preset=$p3 template=${t3:-default}"
+    local mode3=--apply
+    [ "$RECONFIGURE" != 1 ] && [ -s "$AWG_DIR/obfuscation3.env" ] && mode3=--reapply
+    if [ "$mode3" = --reapply ]; then
+        log "Профиль обфускации 3.0: применяется существующий (клиенты не трогаются)"
+    else
+        log "Профиль обфускации 3.0: preset=$p3 template=${t3:-default}"
+    fi
     AWG3_AZ_CONF="$AWG_DIR/${AZ3_IFACE}.conf" AWG3_VPN_CONF="$AWG_DIR/${VPN3_IFACE}.conf" \
         "$DEST/awg-obfuscation.sh" --v3 --preset "$p3" ${t3:+--template "$t3"} \
-        --fp "$FP" --mtu "$MTU3" ${HOST:+--host "$HOST"} --apply
+        --fp "$FP" --mtu "$MTU3" ${HOST:+--host "$HOST"} "$mode3"
 }
 
 switch_services3() {
@@ -523,9 +531,19 @@ build_interfaces() {
 
 # ── 5. обфускация ────────────────────────────────────────────────────────────
 gen_obfuscation() {
-    log "Профиль обфускации: preset=$PRESET template=${TEMPLATE:-default}"
+    # НОВЫЙ профиль — только по явному --reconfigure. Иначе раскладываем
+    # существующий: он уже согласован с выданными клиентами, и перевыпуск
+    # оборвал бы связь всем сразу. Проверяем файл каждого слоя отдельно —
+    # общая проверка по чужому перевыпускала бы клиентов на пустом месте.
+    local mode=--apply
+    [ "$RECONFIGURE" != 1 ] && [ -s "$AWG_DIR/obfuscation.env" ] && mode=--reapply
+    if [ "$mode" = --reapply ]; then
+        log "Профиль обфускации 2.0: применяется существующий (клиенты не трогаются)"
+    else
+        log "Профиль обфускации 2.0: preset=$PRESET template=${TEMPLATE:-default}"
+    fi
     AWG_AZ_CONF="$AWG_DIR/${AZ_IFACE}.conf" AWG_VPN_CONF="$AWG_DIR/${VPN_IFACE}.conf" \
-        "$DEST/awg-obfuscation.sh" --preset "$PRESET" ${TEMPLATE:+--template "$TEMPLATE"} --fp "$FP" --mtu "$MTU" ${HOST:+--host "$HOST"} --apply
+        "$DEST/awg-obfuscation.sh" --preset "$PRESET" ${TEMPLATE:+--template "$TEMPLATE"} --fp "$FP" --mtu "$MTU" ${HOST:+--host "$HOST"} "$mode"
 }
 
 # ── 6. сервисы ───────────────────────────────────────────────────────────────

@@ -245,7 +245,9 @@ list_clients() {
 
 # ── пересоздать конфиги всех клиентов (после смены обфускации) ────────────────
 regen_all() {
-    local svc conf name
+    local svc conf name before after
+    # сколько конфигов реально изменилось: см. итог в конце функции
+    local same=0 changed=0 changed_list=""
     # shellcheck disable=SC1090
     [ -f "$SERVICES" ] && . "$SERVICES"
     # Слои независимы: у каждого свой профиль, поэтому load_obfuscation вызываем
@@ -265,6 +267,7 @@ regen_all() {
         for conf in "${CLIENT_DIR}/${svc}"/*-am.conf; do
             [ -f "$conf" ] || continue
             name="$(basename "$conf" | sed "s/^${svc}-//;s/-am.conf//")"
+            before="$(md5sum "$conf" | cut -d" " -f1)"
             # заменить только строки обфускации, ключи/IP/peer не трогаем
             python3 - "$conf" "$AWG_OBFUSCATION" <<'PY'
 import sys, re
@@ -280,19 +283,41 @@ for line in txt:
     key = line.split("=",1)[0].strip() if "=" in line else ""
     if line.strip().startswith("[Interface]"): in_iface=True; out.append(line); continue
     if line.strip().startswith("[Peer]"):
-        if in_iface: out.extend(block.splitlines()); out.append("")
+        if in_iface:
+            # Хвостовые пустые строки [Interface] убираем ПЕРЕД вставкой:
+            # иначе каждый прогон regen-all добавлял бы ещё одну, файл
+            # менялся бы без единого содержательного изменения, и владелец
+            # думал бы, что клиентам пора раздавать конфиги заново.
+            while out and not out[-1].strip():
+                out.pop()
+            out.append("")
+            out.extend(block.splitlines()); out.append("")
         in_iface=False; out.append(line); continue
     if in_iface and key in obf: continue
     if key in obf: continue   # вычистить obf и вне [Interface] (защита от порчи)
     out.append(line)
 open(path,"w",encoding="utf-8").write("\n".join(out)+"\n")
 PY
+            after="$(md5sum "$conf" | cut -d" " -f1)"
             python3 "$EXPORT" "$conf" --name "${svc}-${name}" \
                 --outdir "$(dirname "$conf")" --all >/dev/null \
                 || log "  QR не собран для $svc/$name (см. предупреждение выше)"
-            log "Пересоздан: $svc/$name"
+            if [ "$before" = "$after" ]; then
+                same=$((same+1))
+            else
+                changed=$((changed+1)); changed_list="$changed_list $svc/$name"
+                log "Изменён: $svc/$name"
+            fi
         done
     done
+    # Итог важнее перечисления: после обновления слоя нужно знать не «что-то
+    # происходило», а придётся ли людям заново импортировать конфиги.
+    if [ "$changed" = 0 ]; then
+        log "Конфиги клиентов: $same без изменений — переимпорт не нужен"
+    else
+        log "Конфиги клиентов: $same без изменений, $changed изменено"
+        log "   Заново скачать конфиг нужно:$changed_list"
+    fi
 }
 
 # ── проверка и удаление просроченных временных клиентов ──────────────────────

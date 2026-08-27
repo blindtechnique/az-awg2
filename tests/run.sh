@@ -75,6 +75,10 @@ head_ "Диагностика"
 run "слой 3.0: оба интерфейса и разные причины отказа" \
     bash tests/test_doctor_v3.sh overlay/bin/awg-doctor.sh
 
+head_ "Переход между ветками"
+run "конфиги слоя 2.0 переживают переход с main" \
+    bash tests/test_migration_main_to_beta.sh
+
 head_ "Проверка обновлений"
 run "таблица компонентов сравнивает со своей веткой" \
     bash tests/test_upstream_branch.sh overlay/bin/awg-upstream-check.sh

@@ -9,6 +9,8 @@
 #   awg-obfuscation.sh                 # интерактивное меню
 #   awg-obfuscation.sh --preset high --template web --fp chrome --apply
 #   awg-obfuscation.sh --show          # показать текущий профиль
+#   awg-obfuscation.sh --reapply       # разложить текущий профиль заново,
+#                                      # НЕ меняя значений (обновление слоя)
 #   awg-obfuscation.sh --regenerate    # перегенерировать I-пакеты (новые сигнатуры)
 #
 # Параметры (кроме Jc/Jmin/Jmax) обязаны совпадать client<->server — поэтому
@@ -28,6 +30,8 @@ SERVER_VPN="${AWG_VPN_CONF:-${AWG_DIR}/vpn.conf}"
 
 PRESET="medium"; TEMPLATE=""; FP="chrome"; HOST=""; MTU=0; EXTREME=0
 APPLY=0; SHOW=0; REGEN=0; INTERACTIVE=1
+# --reapply: разложить уже сгенерированный профиль заново, ничего не меняя
+REAPPLY=0
 # --v3: генерировать профиль для слоя AmneziaWG 3.0 (свои файлы состояния,
 # параметры header protection / content padding / таймингов)
 V3=0
@@ -43,6 +47,7 @@ while [ $# -gt 0 ]; do
         --v3)        V3=1; INTERACTIVE=0; shift ;;
         --extreme)   EXTREME=1; shift ;;
         --apply)     APPLY=1; INTERACTIVE=0; shift ;;
+        --reapply)   REAPPLY=1; APPLY=1; INTERACTIVE=0; shift ;;
         --show)      SHOW=1; INTERACTIVE=0; shift ;;
         --regenerate) REGEN=1; INTERACTIVE=0; shift ;;
         -h|--help)   grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
@@ -160,17 +165,25 @@ GEN_ARGS=(--preset "$PRESET" --fp "$FP")
 [ "$MTU" != 0 ] && GEN_ARGS+=(--mtu "$MTU")
 [ "$EXTREME" = 1 ] && GEN_ARGS+=(--extreme)
 
-log "Генерация профиля: preset=$PRESET template=${TEMPLATE:-default} fp=$FP"
-# ГЕНЕРИРУЕМ ПРОФИЛЬ ОДИН РАЗ (в env-формат). Серверный [Interface]-блок выводим
-# из ТОГО ЖЕ env — иначе два вызова генератора дали бы разные случайные профили,
-# и обфускация сервера не совпала бы с клиентами (клиенты читают этот же env) →
-# handshake был бы невозможен.
-ENV_BLOCK="$(python3 "$GEN" "${GEN_ARGS[@]}" --format env)"
+if [ "$REAPPLY" = 1 ]; then
+    # Профиль не трогаем: он уже согласован с выданными клиентами. Нужно лишь
+    # разложить его заново — например после обновления кода слоя. Новый профиль
+    # здесь означал бы обрыв связи у ВСЕХ выданных клиентов сразу.
+    [ -s "$STATE_ENV" ] || { err "нет $STATE_ENV — нечего применять"; exit 1; }
+    log "Повторное применение существующего профиля (значения не меняются)"
+else
+    log "Генерация профиля: preset=$PRESET template=${TEMPLATE:-default} fp=$FP"
+    # ГЕНЕРИРУЕМ ПРОФИЛЬ ОДИН РАЗ (в env-формат). Серверный [Interface]-блок выводим
+    # из ТОГО ЖЕ env — иначе два вызова генератора дали бы разные случайные профили,
+    # и обфускация сервера не совпала бы с клиентами (клиенты читают этот же env) →
+    # handshake был бы невозможен.
+    ENV_BLOCK="$(python3 "$GEN" "${GEN_ARGS[@]}" --format env)"
 
-# ── сохранить state ──────────────────────────────────────────────────────────
-mkdir -p "$AWG_DIR"
+    mkdir -p "$AWG_DIR"
+    umask 077
+    printf '%s\n' "$ENV_BLOCK" > "$STATE_ENV"
+fi
 umask 077
-printf '%s\n' "$ENV_BLOCK" > "$STATE_ENV"
 # серверный блок — строго из сохранённого env (порядок ключей фиксирован)
 IFACE_BLOCK="$(
     . "$STATE_ENV"
@@ -202,7 +215,9 @@ if [ "$V3" = 1 ]; then
     )"
 fi
 
-cat > "$STATE_META" <<EOF
+# При --reapply пресет не менялся, и переписывать метаданные незачем: иначе
+# META_GENERATED сдвигался бы на каждое обновление слоя.
+[ "$REAPPLY" = 1 ] || cat > "$STATE_META" <<EOF
 META_PRESET=$PRESET
 META_TEMPLATE=$TEMPLATE
 META_FP=$FP
