@@ -32,13 +32,17 @@ jobs:
           fi
           echo "CRLF нет"
 
-      # Статическая сборка с фиксированной версией, а не пакет дистрибутива:
-      # планка «ноль замечаний» измерена именно на ней, и обновление образа
-      # раннера не должно красить сборку задним числом.
+      # Статическая сборка с фиксированной версией и сверкой хэша: пакет
+      # дистрибутива обновился бы и покрасил сборку задним числом, а замена
+      # ассета в релизе прошла бы незамеченной.
       - name: Установить shellcheck
         run: |
           ver=v0.11.0
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz" | tar -xJ
+          sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          curl -fsSL -o sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz"
+          echo "$sha  sc.tar.xz" | sha256sum -c -
+          tar -xJf sc.tar.xz
           sudo install -m0755 "shellcheck-${ver}/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
 
