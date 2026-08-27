@@ -75,6 +75,10 @@ head_ "Диагностика"
 run "слой 3.0: оба интерфейса и разные причины отказа" \
     bash tests/test_doctor_v3.sh overlay/bin/awg-doctor.sh
 
+head_ "Матрица переходов"
+run "из какого состояния каким действием и что при этом сохраняется" \
+    bash tests/test_transitions.sh
+
 head_ "Переход между ветками"
 run "конфиги слоя 2.0 переживают переход с main" \
     bash tests/test_migration_main_to_beta.sh
