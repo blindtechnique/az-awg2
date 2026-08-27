@@ -149,21 +149,24 @@ client_sh() {  # client_sh <каталог> → путь
     echo "$bin/client-awg.sh"
 }
 
-# Режим выбирает НАСТОЯЩЕЕ условие из установщика, а не его копия здесь.
-COND2="$(grep -F 'mode=--reapply' patches/antizapret-awg-integration.sh | head -1)"
-COND3="$(grep -F 'mode3=--reapply' patches/antizapret-awg-integration.sh | head -1)"
+# Режим выбирает НАСТОЯЩАЯ функция из установщика, а не её копия здесь.
+# Пустая выборка = тест мерит сам себя, поэтому она фатальна.
+OBF_MODE_FN="$(sed -n '/^obf_mode()/,/^}/p' patches/antizapret-awg-integration.sh)"
 REC="$(grep -F 'rec=--reconfigure; fi' install.sh | head -1)"
+[ -n "$OBF_MODE_FN" ] || { echo "не нашли obf_mode в интеграции — мерить нечего"; exit 1; }
+[ -n "$REC" ] || { echo "не нашли выбор --reconfigure в install.sh — мерить нечего"; exit 1; }
 
 mode_of() {  # mode_of <2|3> <RECONFIGURE> <CLI_PRESET> <каталог etc> → --apply|--reapply
-    local v="$1"
-    # переменные ниже читают вырезанные из установщика условия под eval —
+    local v="$1" f="$4/obfuscation.env"
+    [ "$v" = 2 ] || f="$4/obfuscation3.env"
+    # переменные ниже читают вырезанные из установщика куски под eval —
     # статически такую связь не увидеть
     # shellcheck disable=SC2034
-    ( AWG_DIR="$4"; RECONFIGURE="$2"; CLI_PRESET="$3"; rec=""
+    ( RECONFIGURE="$2"; CLI_PRESET="$3"; rec=""
       eval "$REC"                       # установщик решает, передавать ли флаг вниз
-      [ "$rec" = --reconfigure ] && RECONFIGURE=1 || RECONFIGURE=0
-      if [ "$v" = 2 ]; then mode=--apply;  eval "$COND2"; echo "$mode"
-      else                  mode3=--apply; eval "$COND3"; echo "$mode3"; fi )
+      if [ "$rec" = --reconfigure ]; then RECONFIGURE=1; else RECONFIGURE=0; fi
+      eval "$OBF_MODE_FN"               # и его же obf_mode решает, что делать
+      obf_mode "$f" )
 }
 
 apply_layer() {  # apply_layer <каталог> <2|3> <режим> [пресет]

@@ -237,16 +237,15 @@ fi
 
 echo
 echo "══ Установщик выбирает режим правильно ═════════════════════════════════"
-# Условие вырезаем из настоящего gen_obfuscation, а не переписываем в тесте
-cond="$(sed -n 's/^    \(\[ "\$RECONFIGURE" != 1 \].*mode=--reapply\)$/\1/p' \
-        patches/antizapret-awg-integration.sh | head -1)"
-if [ -z "$cond" ]; then
-    echo "  ✘ в gen_obfuscation нет выбора между --apply и --reapply"; fail=1
+# Функцию вырезаем из настоящей интеграции, а не переписываем в тесте
+fn="$(sed -n '/^obf_mode()/,/^}/p' patches/antizapret-awg-integration.sh)"
+if [ -z "$fn" ]; then
+    echo "  ✘ в интеграции нет obf_mode — выбор между --apply и --reapply не найден"; fail=1
 else
-    # RECONFIGURE и AWG_DIR читает вырезанное из установщика условие под
-    # eval — статически такую связь не увидеть
+    # RECONFIGURE читает вырезанная из установщика функция под eval —
+    # статически такую связь не увидеть
     # shellcheck disable=SC2034
-    m() { ( RECONFIGURE="$1"; AWG_DIR="$2"; mode=--apply; eval "$cond"; echo "$mode" ); }
+    m() { ( RECONFIGURE="$1"; eval "$fn"; obf_mode "$2/obfuscation.env" ); }
     HASENV="$WORK/has"; mkdir -p "$HASENV"; echo x > "$HASENV/obfuscation.env"
     NOENV="$WORK/none"; mkdir -p "$NOENV"
     [ "$(m 0 "$HASENV")" = "--reapply" ] \

@@ -27,6 +27,7 @@
 #                      3.0 поднимается ОТДЕЛЬНЫМИ интерфейсами и не мешает 2.0
 #   --preset X --template Y --fp Z   обфускация без вопросов
 #   --no-bot           не спрашивать про Telegram-бота
+#   --plan             показать, что сделает прогон, и ничего не делать
 #   --update           обновить код/бот/самовосстановление БЕЗ смены обфускации,
 #                      портов и клиентов (существующие клиенты не ломаются)
 #   --reconfigure      переспросить параметры заново (генерирует НОВЫЙ профиль
@@ -58,7 +59,7 @@ UPSTREAM_REPO="https://github.com/GubernievS/AntiZapret-VPN.git"
 DEST="/opt/antizapret-awg"
 STATE="/opt/antizapret-awg/install-state.env"
 
-INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0
+INSTALL_BASE=0; NO_BOT=0; RECONFIGURE=0; UPDATE=0; MIGRATE=0; PLAN=0
 INSTALL_BOT=0; REMOVE_BOT=0; UNINSTALL=0
 CLI_PRESET=""; CLI_TEMPLATE=""; CLI_FP=""; CLI_PORTS=""
 # Слой 3.0 настраивается отдельно: у него своя обфускация и свои порты. Пусто
@@ -93,6 +94,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --install-base) INSTALL_BASE=1; shift ;;
         --update) UPDATE=1; shift ;;
+        --plan) PLAN=1; shift ;;
         --migrate) MIGRATE=1; shift ;;
         --install-bot)
             INSTALL_BOT=1; shift
@@ -621,7 +623,12 @@ awg_layer() {
     # Пусто — значит слой 3.0 настраивается как 2.0. Так ведут себя установки,
     # сделанные до появления раздельных пресетов: у них в state только AWG_PRESET.
     local P3="${AWG_PRESET3:-}" T3="${AWG_TEMPLATE3:-}"
-    local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}" V="${AWG_VER:-both}"
+    local M="${AWG_MTU:-1320}" H="${AWG_HOST:-}"
+    # В обычном прогоне --awg уже записан в state диалогом collect_choices.
+    # План идёт мимо диалога, и без этой строки он показывал бы слои из
+    # install-state.env вместо запрошенных.
+    local V="${AWG_VER:-both}"
+    case "$CLI_AWG_VER" in 2|3|both) V="$CLI_AWG_VER" ;; esac
     case "$V" in
         2)    log "Слой AmneziaWG 2.0 параллельно ванили (обфускация $P/${T:-default}, MTU $M)…" ;;
         3)    log "Слой AmneziaWG 3.0 параллельно ванили (userspace-датапас)…" ;;
@@ -633,19 +640,24 @@ awg_layer() {
     # «обнови код» от «выпусти новый профиль» и перевыпускала бы всегда.
     # Через ${VAR:+…} нельзя: RECONFIGURE это 0 или 1, оба непустые, и
     # флаг уезжал бы вниз ВСЕГДА — то есть ровно наоборот.
-    local rec=""
+    local rec="" plan=""
     # Явный --preset — тоже просьба сменить профиль: он минует меню (см. main),
     # и без этой ветки новый пресет попадал бы в install-state.env, а
     # obfuscation.env оставался прежним — `awg-obfuscation --show` врал бы.
     if [ "$RECONFIGURE" = 1 ] || [ -n "$CLI_PRESET" ]; then rec=--reconfigure; fi
+    # --plan строит отчёт теми же функциями, что и реальный прогон,
+    # и возвращается, ничего не изменив
+    if [ "$PLAN" = 1 ]; then plan=--plan; fi
     AWG_REPO_BRANCH="$REPO_BRANCH" \
-    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" $rec \
+    bash "$REPO_DIR/patches/antizapret-awg-integration.sh" --awg "$V" $rec $plan \
         --preset "$P" ${T:+--template "$T"} --fp "$F" --mtu "$M" ${H:+--host "$H"} \
         ${AZ_PORT_CHOICE:+--az-port "$AZ_PORT_CHOICE"} \
         ${VPN_PORT_CHOICE:+--vpn-port "$VPN_PORT_CHOICE"} \
         ${P3:+--preset3 "$P3"} ${T3:+--template3 "$T3"} \
         ${AZ3_PORT_CHOICE:+--az3-port "$AZ3_PORT_CHOICE"} \
         ${VPN3_PORT_CHOICE:+--vpn3-port "$VPN3_PORT_CHOICE"}
+    # план на этом кончается: ни статистику, ни бота он не трогает
+    [ "$PLAN" = 1 ] && return 0
     setup_stats
     setup_bot
     echo
@@ -830,6 +842,31 @@ menu_existing() {
     exit 0
 }
 
+# --plan: рассказать, не делая. Отдельная точка входа, потому что обычный
+# путь main() по дороге к слою успевает и почистить устаревшие юниты, и уйти
+# в --update/--migrate — то есть сделать настоящую работу вместо отчёта.
+plan_entry() {
+    local nope=""
+    [ "$UNINSTALL" = 1 ]    && nope="--uninstall"
+    [ "$INSTALL_BASE" = 1 ] && nope="--install-base"
+    [ "$INSTALL_BOT" = 1 ]  && nope="--install-bot"
+    [ "$REMOVE_BOT" = 1 ]   && nope="--remove-bot"
+    if [ -n "$nope" ]; then
+        # Молча проигнорировать флаг нельзя: пользователь ждал бы отчёта,
+        # а получил бы отчёт про другое.
+        err "--plan не умеет показывать $nope: у этой операции нет отчёта"
+        err "Запусти её без --plan — или убери $nope, чтобы увидеть план слоя"
+        return 2
+    fi
+    if ! base_installed; then
+        log "AntiZapret не обнаружен — слой ставить не на что."
+        log "План: сначала база (--install-base, сервер перезагрузится),"
+        log "затем этот же скрипт без флагов поставит слой."
+        return 0
+    fi
+    awg_layer
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 main() {
     # При установке через bash <(curl…) stdin занят потоком скрипта, и read
@@ -837,8 +874,15 @@ main() {
     # Если есть управляющий терминал и мы в интерактивном сценарии — привязываем
     # stdin к нему на весь диалог.
     if [ -r /dev/tty ] && [ "$UPDATE" = 0 ] && [ "$MIGRATE" = 0 ] \
-       && [ "$REMOVE_BOT" = 0 ]; then
+       && [ "$REMOVE_BOT" = 0 ] && [ "$PLAN" = 0 ]; then
         exec < /dev/tty
+    fi
+    # План — раньше всего остального: ниже уже чистится устаревший awg-resume,
+    # а --update и --migrate уходят своей дорогой и сделали бы настоящую
+    # работу вместо отчёта о ней.
+    if [ "$PLAN" = 1 ]; then
+        plan_entry
+        exit $?
     fi
     # чистим устаревший awg-resume от прошлых версий установщика (больше не нужен)
     if [ -f /etc/systemd/system/awg-resume.service ]; then

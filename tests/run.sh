@@ -79,6 +79,10 @@ head_ "Матрица переходов"
 run "из какого состояния каким действием и что при этом сохраняется" \
     bash tests/test_transitions.sh
 
+head_ "Сухой прогон"
+run "--plan показывает то, что будет, и не трогает диск" \
+    bash tests/test_plan.sh
+
 head_ "Переход между ветками"
 run "конфиги слоя 2.0 переживают переход с main" \
     bash tests/test_migration_main_to_beta.sh
