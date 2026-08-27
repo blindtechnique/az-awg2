@@ -33,6 +33,9 @@ run() {
             echo 'else: print("  не заданы (работает как 2.0)")'
         } > "$d/dest/awg3-uapi.py"
     fi
+    # переменные ниже читает вырезанный из скрипта блок под eval,
+    # статически такую связь не увидеть
+    # shellcheck disable=SC2034
     ( set -uo pipefail
       AWG_DIR="$d/etc"; DEST="$d/dest"
       AZ3_IFACE=antizapret-awg3; VPN3_IFACE=vpn-awg3

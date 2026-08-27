@@ -52,6 +52,10 @@ CONF="$AWG_DIR/$IFACE.conf"
 V3="$AWG_DIR/$IFACE.v3"
 IENV="$AWG_DIR/$IFACE.env"
 
+# load_env сбрасывает ВЕСЬ набор ключей <iface>.env перед source,
+# включая те, что этот скрипт не читает: иначе второй вызов
+# унаследовал бы значения от первого.
+# shellcheck disable=SC2034
 load_env() {
     SUBNET=""; PORT=""; NAT=0; SPLIT=0; MTU=1380; ADDRESS=""
     WAN=""

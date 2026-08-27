@@ -12,6 +12,8 @@ run() {  # run <содержимое .layer-branch или пусто> <стро�
     local d; d="$(mktemp -d)"
     [ -n "$1" ] && printf '%s\n' "$1" > "$d/.layer-branch"
     [ -n "$2" ] && printf '%s\n' "$2" > "$d/bot.env"
+    # DEST читает вырезанный блок, а branch он же и выставляет
+    # shellcheck disable=SC2034,SC2154
     ( set -uo pipefail; DEST="$d"; eval "$blk"; echo "$branch|$(cat "$d/.layer-branch" 2>/dev/null || echo -)" )
     rm -rf "$d"
 }

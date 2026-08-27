@@ -28,22 +28,22 @@ jobs:
           fi
           echo "CRLF нет"
 
+      # Статическая сборка с фиксированной версией, а не пакет дистрибутива:
+      # планка «ноль замечаний» измерена именно на ней, и обновление образа
+      # раннера не должно красить сборку задним числом.
       - name: Установить shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+        run: |
+          ver=v0.11.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz" | tar -xJ
+          sudo install -m0755 "shellcheck-${ver}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
+      # Планка — warning, и дерево ей соответствует: замечаний ноль.
       # SC1090/SC1091 отключены намеренно: почти каждый скрипт читает
       # services.env и профили обфускации по вычисляемому пути, статически
-      # такой source не разворачивается никогда.
-      - name: shellcheck — ошибки
-        run: |
-          mapfile -t files < <(git ls-files '*.sh')
-          shellcheck -S error -e SC1090,SC1091 "${files[@]}"
-
-      # Предупреждения пока не блокируют: их объём на унаследованном коде не
-      # измерен, а красный CI с первого дня никто не чинит. Шаг существует,
-      # чтобы объём был виден и его можно было сокращать осознанно.
-      - name: shellcheck — предупреждения (справочно)
-        continue-on-error: true
+      # такой source не разворачивается никогда. Остальные исключения стоят
+      # точечно, в самих файлах, и каждое объяснено рядом.
+      - name: shellcheck
         run: |
           mapfile -t files < <(git ls-files '*.sh')
           shellcheck -S warning -e SC1090,SC1091 "${files[@]}"
