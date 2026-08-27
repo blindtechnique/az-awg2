@@ -1,0 +1,52 @@
+name: CI
+
+# Статические проверки и приёмка. Ничего не устанавливает на систему: наборы
+# работают на подставных systemctl/ip/python3 во временных каталогах и
+# разбирают настоящие файлы репозитория.
+on:
+  push:
+    branches: [main, beta]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Проект ломается на CRLF: bash падает уже на первой строке с
+      # «invalid option name: pipefail». Ловим до того, как это доедет до
+      # сервера — установщик чистит \r только у того, что раскладывает сам.
+      - name: Переводы строк
+        run: |
+          bad="$(git ls-files -z | xargs -0 grep -lI --binary-files=without-match -P '\r$' 2>/dev/null || true)"
+          if [ -n "$bad" ]; then
+            echo "Файлы с CRLF (проект на них ломается):"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "CRLF нет"
+
+      - name: Установить shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      # SC1090/SC1091 отключены намеренно: почти каждый скрипт читает
+      # services.env и профили обфускации по вычисляемому пути, статически
+      # такой source не разворачивается никогда.
+      - name: shellcheck — ошибки
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          shellcheck -S error -e SC1090,SC1091 "${files[@]}"
+
+      # Предупреждения пока не блокируют: их объём на унаследованном коде не
+      # измерен, а красный CI с первого дня никто не чинит. Шаг существует,
+      # чтобы объём был виден и его можно было сокращать осознанно.
+      - name: shellcheck — предупреждения (справочно)
+        continue-on-error: true
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          shellcheck -S warning -e SC1090,SC1091 "${files[@]}"
+
+      - name: Приёмка
+        run: bash tests/run.sh
