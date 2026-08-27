@@ -123,7 +123,7 @@ inc "ошибка всё равно видна" "$o" "Не удалось под
 chk "но код 0"               "$(printf '%s' "$o" | tail -1)" "rc=0"
 
 echo
-echo "══ Прежняя проверка на этом же стенде действительно ломалась ═══════════"
+echo "══ Проверка наличия юнита не зависит от объёма вывода ══════════════════"
 d="$(mktemp -d)"; mkdir -p "$d/bin"
 cat > "$d/bin/systemctl" <<'EOS'
 #!/bin/bash
@@ -137,9 +137,17 @@ esac
 exit 0
 EOS
 chmod +x "$d/bin/systemctl"
-chk "прежний конвейер даёт ЛОЖЬ, хотя юнит есть" \
-    "$(PATH="$d/bin:$PATH" bash -euo pipefail -c 'if systemctl list-unit-files | grep -q "awg3@"; then echo ИСТИНА; else echo ЛОЖЬ; fi' 2>&1)" "ЛОЖЬ"
-chk "новая проверка в той же среде — ИСТИНА" \
+# Справочно, без влияния на вердикт: сработает ли SIGPIPE — гонка, и она
+# решается по-разному даже между машинами. В WSL подставной systemctl умирает
+# от сигнала и конвейер отдаёт ЛОЖЬ; на раннере GitHub тот же bash печатает
+# «write error: Broken pipe», доходит до exit 0 и отдаёт ИСТИНА. Ровно об этой
+# недетерминированности и вся история: полагаться на такой конвейер нельзя.
+old="$(PATH="$d/bin:$PATH" bash -euo pipefail -c 'if systemctl list-unit-files | grep -q "awg3@"; then echo ИСТИНА; else echo ЛОЖЬ; fi' 2>/dev/null)"
+echo "  ℹ прежний конвейер на этой машине дал: ${old:-(ничего)}"
+[ "$old" = "ЛОЖЬ" ] && echo "     — то есть молча пропустил бы перезапуск"
+
+# А вот это уже свойство нашего кода, а не гонки, и оно обязано держаться везде.
+chk "новая проверка не зависит от размера вывода" \
     "$(PATH="$d/bin:$PATH" bash -euo pipefail -c 'p=0; systemctl cat "awg3@.service" >/dev/null 2>&1 && p=1; [ "$p" = 1 ] && echo ИСТИНА || echo ЛОЖЬ' 2>&1)" "ИСТИНА"
 rm -rf "$d"
 
