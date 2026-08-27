@@ -1,0 +1,64 @@
+name: CI
+
+# Статические проверки. Приёмки в этой ветке нет — она живёт в beta, поэтому
+# здесь то, что проверяется и без неё: переводы строк, shellcheck, синтаксис
+# bash и компиляция python. Ничего не устанавливает и никуда не ходит, кроме
+# скачивания самого shellcheck.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Проект ломается на CRLF: bash падает уже на первой строке с
+      # «invalid option name: pipefail». Ловим до того, как это доедет до
+      # сервера — установщик чистит \r только у того, что раскладывает сам.
+      - name: Переводы строк
+        run: |
+          bad="$(git ls-files -z | xargs -0 grep -lI --binary-files=without-match -P '\r$' 2>/dev/null || true)"
+          if [ -n "$bad" ]; then
+            echo "Файлы с CRLF (проект на них ломается):"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "CRLF нет"
+
+      # Статическая сборка с фиксированной версией и сверкой хэша: пакет
+      # дистрибутива обновился бы и покрасил сборку задним числом, а замена
+      # ассета в релизе прошла бы незамеченной.
+      - name: Установить shellcheck
+        run: |
+          ver=v0.11.0
+          sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          curl -fsSL -o sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz"
+          echo "$sha  sc.tar.xz" | sha256sum -c -
+          tar -xJf sc.tar.xz
+          sudo install -m0755 "shellcheck-${ver}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      # Планка — warning, и дерево ей соответствует: замечаний ноль.
+      # SC1090/SC1091 отключены намеренно: почти каждый скрипт читает
+      # services.env и профиль обфускации по вычисляемому пути, статически
+      # такой source не разворачивается никогда.
+      - name: shellcheck
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          shellcheck -S warning -e SC1090,SC1091 "${files[@]}"
+
+      - name: Синтаксис bash
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "не разбирается: $f"; rc=1; }
+          done < <(git ls-files '*.sh')
+          exit "$rc"
+
+      - name: Компиляция python
+        run: python3 -m compileall -q bot overlay
