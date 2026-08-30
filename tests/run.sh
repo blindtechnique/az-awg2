@@ -79,6 +79,9 @@ head_ "Матрица переходов"
 run "из какого состояния каким действием и что при этом сохраняется" \
     bash tests/test_transitions.sh
 
+head_ "Обфускация: границы"
+run "окно junk-пакетов и неизменность на рабочем MTU" "$PY" tests/test_junk_range.py
+
 head_ "Ловушки bash"
 run "занятые порты и адреса, конфиг без ключа"     bash tests/test_bash_traps.sh
 

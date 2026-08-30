@@ -316,9 +316,18 @@ def generate(preset: str = "medium",
     jc = _range(p["jc"])
     jmin = int(p["jmin"])
     jmax = int(p["jmax"])
-    if jmax <= jmin:
-        jmax = jmin + 40
-    jmax = min(jmax, mtu - 40)
+    # Порядок здесь принципиален: сначала потолок, потом инвариант. В обратном
+    # порядке (как было) кламп по MTU ломал уже восстановленный инвариант — при
+    # mtu-40 < jmin наружу уходила пара Jmin > Jmax. Не отвергает её никто: ни
+    # утилиты, ни ядро (netlink принимает голые NLA_U16 без сравнения), а в
+    # wg_packet_send_handshake_initiation размер джанка берётся как
+    # get_random_u32_inclusive(jmin, jmax) — хелпер, требующий floor <= ceil.
+    # Воспроизводилось на `--mtu 60 --preset paranoid`: Jmin=24, Jmax=20.
+    jmax = min(jmax, max(mtu - 40, 2))
+    if jmin >= jmax:
+        # MTU настолько мал, что окно джанка в него не помещается. Сохранить
+        # намерение пресета нельзя, а соврать инвариантом — нельзя тем более.
+        jmin = max(1, jmax - 40)
 
     s1 = _range(p["s1"])
     s2 = _range(p["s2"])
