@@ -24,3 +24,10 @@ patches/antizapret-awg-integration.sh :: pipe-fallible :: [ -z "$rev" ] && rev="
 patches/antizapret-awg-integration.sh :: pipe-fallible :: _valid_key() { [ -n "$1" ] && printf '%s' "$1" | awg pubkey >/dev/null 2>&1; } :: предикат: код возврата и есть ответ, вызывается только в условии
 patches/antizapret-awg-integration.sh :: pipe-fallible :: _valid_key3() { [ -n "$1" ] && printf '%s' "$1" | awg pubkey >/dev/null 2>&1; } :: предикат: код возврата и есть ответ, вызывается только в условии
 patches/antizapret-awg-integration.sh :: pipe-fallible :: sha="$(curl -fsSL 'https://go.dev/dl/?mode=json' | python3 -c " :: python3 в хвосте конвейера отдаёт 0 и на пустом входе; проверка `[ -n "$sha" ]` ниже теперь достижима
+
+# Привязка stdin к терминалу при установке через bash <(curl…): там stdin занят
+# потоком скрипта, и read берёт данные оттуда, а не с клавиатуры. Вечность
+# перенаправления здесь ЗАМЫСЕЛ — оно нужно на весь диалог. Гибель оболочки
+# исключена проверкой [ -r /dev/tty ] прямо перед exec.
+install.sh :: exec-unbraced :: exec < /dev/tty :: ограждено [ -r /dev/tty ] выше по условию; вечное перенаправление stdin здесь и есть цель
+install.sh :: exec-unbraced :: [ -r /dev/tty ] && exec < /dev/tty :: проверка стоит в той же строке; перенаправление нужно на весь диалог удаления
