@@ -233,7 +233,12 @@ install_awg3() {
 install_go3() {
     local want ver sha tgz
     if command -v go >/dev/null 2>&1; then
-        ver="$(go version | awk '{print $3}')"
+        # `|| true` на весь конвейер: command -v выше подтверждает наличие
+        # файла, но не работоспособность. Битый GOROOT после оборванной
+        # установки или чужая архитектура дают ненулевой код, и присваивание
+        # убивало установщик ДО строки «Установка Go». Пустой ver ниже уже
+        # трактуется как «не годится» и ведёт к переустановке.
+        ver="$(go version 2>/dev/null | awk '{print $3}' || true)"
         # amneziawg-go 3.0 требует go >= 1.25 (его go.mod)
         [ "$(printf '%s\ngo1.25.0\n' "$ver" | sort -V | head -1)" = "go1.25.0" ] && return 0
     fi

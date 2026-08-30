@@ -45,7 +45,10 @@ SKIP_DIRS = {"tests", ".git", ".github"}
 # нашлось» для них — обычный ответ. Именно они превращают конвейер в мину под
 # pipefail. printf, md5sum, basename, cut, tr, awk и sed сюда НЕ входят: они
 # отдают 0 и на пустом входе, и ловить их — только засорять список исключений.
-FALLIBLE = r"(grep|ls|find|git|getent|modinfo|dpkg|curl|wget|systemctl|lsmod|ip\s+route\s+get|awg\s+show)"
+# awg и go добавлены по итогам разбора: `awg setconf` в конвейере убивал
+# скрипт до уборки временного файла с приватным ключом сервера, а
+# `go version` на битом GOROOT — до собственного сообщения об ошибке.
+FALLIBLE = r"(grep|ls|find|git|getent|modinfo|dpkg|curl|wget|systemctl|lsmod|ip\s+route\s+get|awg\s+\w+|go\s+version)"
 
 # 1. Конвейер-предикат: последняя стадия — grep -q или grep -m, то есть код
 #    возврата И ЕСТЬ ответ. Под pipefail SIGPIPE от producer подменяет его на
