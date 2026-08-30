@@ -90,6 +90,10 @@ run "из какого состояния каким действием и чт�
 head_ "Обфускация: границы"
 run "окно junk-пакетов и неизменность на рабочем MTU" "$PY" tests/test_junk_range.py
 
+head_ "Модель согласованности"
+run "CONSISTENCY.md сверен с кодом в обе стороны" \
+    bash tests/test_consistency_doc.sh
+
 head_ "Согласованность состояния"
 run "ключи и пиры: клиент без пира, сирота, дубликат адреса, чужой ключ сервера" \
     bash tests/test_consistency.sh
