@@ -38,7 +38,40 @@ warn() { REPORT+=("WARN|$1"); [ "$JSON" = 1 ] || printf '  \033[1;33m!\033[0m %s
 # иначе в чат приезжает плоская простыня без разделов
 head_() { REPORT+=("SECTION|$1"); [ "$JSON" = 1 ] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-[ -f "$SERVICES" ] || { echo "Слой не установлен: нет $SERVICES" >&2; exit 3; }
+# ── оборванные операции ─────────────────────────────────────────────────────
+# Стоит ПЕРЕД требованием services.env: операция, убитая до копирования этого
+# файла, иначе выглядела бы как «слой не установлен», и метка, объясняющая
+# происходящее, не показалась бы никогда.
+# Именована и закрыта `}` на своей строке — стенд вырезает её из файла sed-ом,
+# как check_ports в tests/test_ports.sh.
+check_marks() {
+    local m found=0
+    for m in "$AWG_DIR/.restore-in-progress" "$AWG_DIR/.migrate-in-progress"; do
+        [ -f "$m" ] || continue
+        [ "$found" = 1 ] || head_ "Оборванные операции"
+        found=1
+        MARK_STARTED=""; MARK_ARCHIVE=""; MARK_MODE=""
+        # shellcheck disable=SC1090
+        . "$m" 2>/dev/null || true
+        case "$m" in
+            *restore*)
+                bad "восстановление не доведено до конца (начато ${MARK_STARTED:-?})"
+                warn "файлы могли обновиться, а сервисы остаться на прежних —"
+                warn "повтори: awg-backup restore ${MARK_ARCHIVE:-<архив>}" ;;
+            *migrate*)
+                bad "миграция ${MARK_MODE:-?} → parallel не доведена до конца"
+                warn "повтори полный прогон установщика — он доделает начатое" ;;
+        esac
+    done
+}
+check_marks
+
+[ -f "$SERVICES" ] || {
+    echo "Слой не установлен: нет $SERVICES" >&2
+    [ -f "$AWG_DIR/.restore-in-progress" ] && \
+        echo "  восстановление оборвалось до копирования services.env — повтори awg-backup restore" >&2
+    exit 3
+}
 # shellcheck disable=SC1090
 . "$SERVICES"
 LAYER2="${LAYER2:-1}"; LAYER3="${LAYER3:-0}"

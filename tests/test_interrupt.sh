@@ -246,10 +246,18 @@ if [ -z "$DR" ]; then
     bad "не нашли do_restore" "мерить нечего"
 else
     R="$WORK/restore"
-    mkdir -p "$R/stage/amneziawg" "$R/stage/client" "$R/etc" "$R/az/client"
+    mkdir -p "$R/stage/amneziawg" "$R/stage/client" "$R/stage/awgstate" \
+             "$R/etc" "$R/az/client"
     echo backup > "$R/stage/MANIFEST"
     printf 'PrivateKey = ИЗ_БЭКАПА\n' > "$R/stage/amneziawg/antizapret-awg.conf"
     printf 'PrivateKey = КЛИЕНТ_ИЗ_БЭКАПА\n' > "$R/stage/client/c1-am.conf"
+    # Настоящий архив всегда несёт эти три вещи, и восстановление теперь вслух
+    # жалуется на их отсутствие. Стенд мерит прерывание, а не полноту архива,
+    # поэтому обставляем его как настоящий — иначе он мерил бы жалобу.
+    printf 'LAYER2=1\nAZ_IFACE=antizapret\nVPN_IFACE=vpn\n' \
+        > "$R/stage/amneziawg/services.env"
+    printf 'stats\n' > "$R/stage/awgstate/stats.db"
+    printf '#!/bin/bash\nexit 0\n' > "$R/az/doall.sh"
     ( cd "$R/stage" && tar -czf "$R/bk.tar.gz" . )
 
     # живое состояние делаем заведомо ДРУГИМ, чтобы отличать восстановленное
@@ -270,9 +278,12 @@ else
         local pfx=""
         [ "$1" != 0 ] && pfx="$CPSTUB:"
         echo 0 > "$WORK/cpcnt"
+        # RESTORE_MARK объявлен на уровне файла, а вырезается только тело
+        # функции — без этой строки кусок падает под set -u на первой же записи.
         PATH="${pfx}$PATH" CP_COUNT="$WORK/cpcnt" CP_DIE_AT="$1" \
         bash -c "set -euo pipefail
             AWG_DIR=$R/etc; DEST=$R/dest; AZ=$R/az
+            RESTORE_MARK=$R/etc/.restore-in-progress
             log() { :; }; err() { :; }; systemctl() { :; }
             $DR
             do_restore $R/bk.tar.gz" >/dev/null 2>&1

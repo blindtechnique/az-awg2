@@ -82,6 +82,10 @@ run "из какого состояния каким действием и чт�
 head_ "Обфускация: границы"
 run "окно junk-пакетов и неизменность на рабочем MTU" "$PY" tests/test_junk_range.py
 
+head_ "Бэкап и восстановление"
+run "архив содержит клиентские ключи, а отказ доезжает до кода возврата" \
+    bash tests/test_restore_integrity.sh
+
 head_ "Прерывание reconfigure"
 run "сервер на новом профиле, клиенты на старом — и это видно" \
     bash tests/test_reconfigure_interrupt.sh
