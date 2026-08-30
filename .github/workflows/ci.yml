@@ -56,5 +56,15 @@ jobs:
           mapfile -t files < <(git ls-files '*.sh')
           shellcheck -S warning -e SC1090,SC1091 "${files[@]}"
 
+      # Ubuntu 24.04 запрещает непривилегированные user namespaces через
+      # apparmor, и на раннере unshare -Urm недоступен: наборы, которые под ним
+      # запускают настоящие прогоны, молча пропускали свою главную часть и всё
+      # равно выходили с нулём.
+      - name: Разрешить непривилегированные namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare -Urm --map-root-user true && echo "unshare доступен" \
+            || echo "unshare ВСЁ ЕЩЁ недоступен — наборы скажут об этом аннотацией"
+
       - name: Приёмка
         run: bash tests/run.sh
