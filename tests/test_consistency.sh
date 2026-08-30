@@ -279,6 +279,18 @@ else
         esac
     done
     ok "лишних каталогов в вызовах нет"
+
+    # check_live идёт по интерфейсам, а не по каталогам клиентов, поэтому в
+    # список выше он не годится. Связываем его с check_iface: сколько
+    # интерфейсов осматривается, столько же раз надо спросить и живое ядро.
+    n_iface="$(grep -c '^ *check_iface "' "$DOC" || true)"
+    n_live="$(grep -c '^ *check_live "' "$DOC" || true)"
+    if [ "$n_iface" = "$n_live" ] && [ "$n_iface" != 0 ]; then
+        ok "сверка с живым ядром вызвана для всех $n_iface интерфейсов"
+    else
+        bad "check_live вызвана $n_live раз при $n_iface интерфейсах" \
+            "для части интерфейсов расхождение конфига с ядром не проверяется"
+    fi
 fi
 
 
@@ -352,6 +364,93 @@ else
     case "$out" in
         *"у всех 2 конфигов MTU 1420"*) ok "конфиг без строки MTU в счёт не идёт" ;;
         *) bad "конфиг без MTU посчитан или сломал проверку" "$out" ;;
+    esac
+fi
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "12. Живой интерфейс сверяется с серверным конфигом"
+# check_peers сверяет файлы между собой. Здесь — файл против ЯДРА: на диске всё
+# может быть согласовано, а интерфейс поднят из прежнего состояния. Так
+# выглядит «конфиг переписали, а awg setconf не сделали», и именно это остаётся
+# после восстановления, убитого между копированием файлов и перезапуском.
+LV="$(sed -n '/^check_live()/,/^}$/p' "$DOC")"
+if [ -z "$LV" ]; then
+    bad "не нашли check_live в $DOC" "мерить нечего"
+else
+    LS="$WORK/livestub"; mkdir -p "$LS"
+    printf '#!/bin/sh\nexit 0\n' > "$LS/ip"
+    {
+        echo '#!/bin/bash'
+        echo 'case "${1:-}" in'
+        echo '  pubkey) read -r k; printf "PUB-%s\n" "$k"; exit 0 ;;'
+        echo '  show) case "${3:-}" in'
+        echo '          public-key) printf "%s\n" "$LIVE_PUB" ;;'
+        echo '          peers) printf "%s" "$LIVE_PEERS" | tr " " "\n" | grep -v "^$" || true ;;'
+        echo '        esac; exit 0 ;;'
+        echo 'esac'
+        echo 'exit 0'
+    } > "$LS/awg"
+    chmod +x "$LS"/ip "$LS"/awg
+
+    lv() {  # lv <живой pubkey> <живые пиры> <пиры в конфиге>
+        local d="$WORK/lv" p
+        rm -rf "$d"; mkdir -p "$d"
+        { printf '[Interface]\nPrivateKey = SRV\n'
+          for p in $3; do printf '\n[Peer]\nPublicKey = %s\n' "$p"; done
+        } > "$d/i.conf"
+        ( PATH="$LS:$PATH"; export LIVE_PUB="$1" LIVE_PEERS="$2"
+          ok()   { printf 'OK %s\n' "$*"; }
+          bad()  { printf 'BAD %s\n' "$*"; }
+          warn() { printf 'WARN %s\n' "$*"; }
+          eval "$LV"
+          check_live i "$d/i.conf" )
+    }
+
+    out="$(lv PUB-SRV "K1 K2" "K1 K2")"
+    case "$out" in
+        *BAD*|*WARN*) bad "исправное состояние названо расхождением" "$out" ;;
+        *) ok "ключ и пиры совпали — жалоб нет" ;;
+    esac
+
+    out="$(lv PUB-ДРУГОЙ "K1" "K1")"
+    case "$out" in
+        *"BAD"*"работает по ДРУГОМУ ключу"*) ok "интерфейс из чужого конфига найден" ;;
+        *) bad "чужой ключ интерфейса пропущен" "$out" ;;
+    esac
+    case "$out" in
+        *"не перезапущен"*) ok "и сказано, что это значит" ;;
+        *) bad "последствие не названо" "$out" ;;
+    esac
+
+    out="$(lv PUB-SRV "K1" "K1 K2")"
+    case "$out" in
+        *"BAD"*"1 пиров есть в конфиге, но не загружены"*) ok "незагруженный пир найден" ;;
+        *) bad "пир из конфига без загрузки пропущен" "$out" ;;
+    esac
+
+    out="$(lv PUB-SRV "K1 K9" "K1")"
+    case "$out" in
+        *"WARN"*"1 пиров загружены в интерфейс, но их нет в конфиге"*)
+            ok "лишний пир в ядре найден" ;;
+        *) bad "пир в ядре без конфига пропущен" "$out" ;;
+    esac
+    case "$out" in
+        *"BAD"*) bad "названо поломкой" "пир мог быть добавлен руками через awg set" ;;
+        *) ok "и это замечание, а не поломка" ;;
+    esac
+
+    # Молчание там, где доказать нечем: интерфейса нет.
+    mkdir -p "$WORK/empty"
+    out="$( PATH="$WORK/empty:$PATH"
+            d="$WORK/lv2"; rm -rf "$d"; mkdir -p "$d"
+            printf '[Interface]\nPrivateKey = SRV\n' > "$d/i.conf"
+            ok() { printf 'OK %s\n' "$*"; }; bad() { printf 'BAD %s\n' "$*"; }
+            warn() { printf 'WARN %s\n' "$*"; }
+            eval "$LV"; check_live i "$d/i.conf" )"
+    case "$out" in
+        *BAD*|*WARN*) bad "жалоба при неподнятом интерфейсе" "$out" ;;
+        *) ok "интерфейс не поднят — молчим, об этом говорит check_iface" ;;
     esac
 fi
 

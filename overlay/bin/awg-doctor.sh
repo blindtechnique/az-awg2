@@ -310,6 +310,59 @@ check_client_mtu() {  # check_client_mtu <объявленный MTU> <ката�
     fi
 }
 
+# ── живой интерфейс против конфига ──────────────────────────────────────────
+# check_peers сверяет файлы между собой. Здесь — файл против ЯДРА: на диске
+# может быть всё согласовано, а интерфейс поднят из прежнего состояния. Так
+# выглядит «конфиг переписали, а awg setconf не сделали», и именно это остаётся
+# после восстановления, убитого между копированием файлов и перезапуском.
+check_live() {  # check_live <имя интерфейса> <серверный конфиг>
+    local i="$1" conf="$2"
+    [ -f "$conf" ] || return 0
+    command -v awg >/dev/null 2>&1 || return 0
+    ip link show "$i" >/dev/null 2>&1 || return 0   # не поднят — сказала check_iface
+
+    local live_pub disk_priv disk_pub
+    live_pub="$(awg show "$i" public-key 2>/dev/null || true)"
+    disk_priv="$(sed -n 's/^PrivateKey *= *//p' "$conf" 2>/dev/null | head -1 || true)"
+    disk_pub=""
+    [ -n "$disk_priv" ] && disk_pub="$(printf '%s' "$disk_priv" | awg pubkey 2>/dev/null || true)"
+    if [ -n "$live_pub" ] && [ -n "$disk_pub" ]; then
+        if [ "$live_pub" = "$disk_pub" ]; then
+            ok "$i: интерфейс поднят из нынешнего конфига"
+        else
+            bad "$i: интерфейс работает по ДРУГОМУ ключу, чем в $conf" \
+                "конфиг переписан, а интерфейс не перезапущен — клиенты по нему не сойдутся"
+        fi
+    fi
+
+    local live_peers conf_peers p n_only_conf=0 n_only_live=0
+    live_peers="$(awg show "$i" peers 2>/dev/null | tr '\n' ' ' || true)"
+    conf_peers="$(sed -n 's/^PublicKey *= *//p' "$conf" 2>/dev/null | tr '\n' ' ' || true)"
+    for p in $conf_peers; do
+        case " $live_peers " in
+            *" $p "*) ;;
+            *) n_only_conf=$((n_only_conf + 1)) ;;
+        esac
+    done
+    for p in $live_peers; do
+        case " $conf_peers " in
+            *" $p "*) ;;
+            *) n_only_live=$((n_only_live + 1)) ;;
+        esac
+    done
+    if [ "$n_only_conf" != 0 ]; then
+        bad "$i: $n_only_conf пиров есть в конфиге, но не загружены в интерфейс" \
+            "эти клиенты не подключатся до перезапуска: systemctl restart на юните слоя"
+    fi
+    if [ "$n_only_live" != 0 ]; then
+        warn "$i: $n_only_live пиров загружены в интерфейс, но их нет в конфиге" \
+             "доступ переживёт только до перезапуска — добавь их в конфиг или убери"
+    fi
+    [ "$n_only_conf" = 0 ] && [ "$n_only_live" = 0 ] && [ -n "$conf_peers$live_peers" ] \
+        && ok "$i: пиры в ядре и в конфиге совпадают"
+    return 0
+}
+
 check_peers() {  # check_peers <серверный конфиг> <каталог клиентов> <метка>
     local conf="$1" cldir="$2" label="$3"
     [ -f "$conf" ] || return 0
@@ -412,6 +465,8 @@ if [ "$LAYER2" = 1 ]; then
     else bad "модуль amneziawg недоступен — dkms status"; fi
     check_iface "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-0}" 2
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
+    check_live "${AZ_IFACE:-antizapret-awg}" "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf"
+    check_live "${VPN_IFACE:-vpn-awg}" "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf"
     check_ports "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-}" "$DEST/clients/antizapret" AZ_PORT
     check_ports "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-}" "$DEST/clients/vpn" VPN_PORT
     check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
@@ -428,6 +483,8 @@ if [ "$LAYER3" = 1 ]; then
     else bad "нет amneziawg-go"; fi
     check_iface "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-0}" 3
     check_iface "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-0}" 3
+    check_live "${AZ3_IFACE:-antizapret-awg3}" "$AWG_DIR/${AZ3_IFACE:-antizapret-awg3}.conf"
+    check_live "${VPN3_IFACE:-vpn-awg3}" "$AWG_DIR/${VPN3_IFACE:-vpn-awg3}.conf"
     check_ports "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-}" "$DEST/clients/antizapret3" AZ3_PORT
     check_ports "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-}" "$DEST/clients/vpn3" VPN3_PORT
     check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
