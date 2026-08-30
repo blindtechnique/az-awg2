@@ -82,6 +82,10 @@ run "из какого состояния каким действием и чт�
 head_ "Обфускация: границы"
 run "окно junk-пакетов и неизменность на рабочем MTU" "$PY" tests/test_junk_range.py
 
+head_ "Прерывание reconfigure"
+run "сервер на новом профиле, клиенты на старом — и это видно" \
+    bash tests/test_reconfigure_interrupt.sh
+
 head_ "Прерывание настоящей миграции"
 run "прерванная миграция доделывается повторным запуском" \
     bash tests/test_migrate_interrupt.sh
