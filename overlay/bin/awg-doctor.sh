@@ -52,6 +52,52 @@ if [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = 1 ]; then ok "IP forwardin
 else bad "IP forwarding выключен"; fi
 
 # ── интерфейсы слоёв ────────────────────────────────────────────────────────
+
+# ── инвариант портов ────────────────────────────────────────────────────────
+# Порт живёт в трёх местах сразу: в services.env (объявленный), в серверном
+# конфиге (ListenPort) и в каждом выданном клиенте (Endpoint). Разъехаться они
+# могут молча: правка конфига руками, оборванная миграция, перенос сервера. И
+# тогда «порт не слушается» — это следствие, а не причина, а лечится оно
+# переизданием клиентских конфигов, а не перезапуском сервиса.
+check_ports() {  # check_ports <имя_интерфейса> <объявленный порт> <каталог клиентов>
+    local iface="$1" want="$2" cldir="$3"
+    local conf="$AWG_DIR/${iface}.conf" got n=0 bad_n=0 sample=""
+    [ -n "$want" ] && [ "$want" != 0 ] || { warn "порт $iface не объявлен в services.env"; return; }
+
+    got="$(sed -n 's/^ListenPort *= *//p' "$conf" 2>/dev/null | head -1 || true)"
+    if [ -z "$got" ]; then
+        bad "$conf: нет ListenPort — интерфейс не поднимется"
+    elif [ "$got" != "$want" ]; then
+        bad "$iface: в services.env порт $want, в конфиге $got" \
+            "клиенты стучатся по одному из них, сервер слушает другой"
+    else
+        ok "$iface: порт в конфиге совпадает с объявленным ($want)"
+    fi
+
+    [ -d "$cldir" ] || return 0
+    local f ep
+    for f in "$cldir"/*-am.conf; do
+        [ -f "$f" ] || continue
+        n=$((n + 1))
+        # Endpoint = host:port — порт это хвост после последнего двоеточия,
+        # так что IPv6-адрес в скобках он тоже переживёт.
+        ep="$(sed -n 's/^Endpoint *= *//p' "$f" 2>/dev/null | head -1 || true)"
+        ep="${ep##*:}"
+        [ -n "$ep" ] && [ "$ep" != "$want" ] && {
+            bad_n=$((bad_n + 1))
+            [ -n "$sample" ] || sample="$(basename "$f") → $ep"
+        }
+    done
+    if [ "$n" = 0 ]; then
+        :
+    elif [ "$bad_n" = 0 ]; then
+        ok "$iface: у всех $n выданных конфигов Endpoint на порт $want"
+    else
+        bad "$iface: у $bad_n из $n конфигов Endpoint на чужой порт ($sample)" \
+            "этим клиентам нужно раздать конфиги заново — перезапуск не поможет"
+    fi
+}
+
 check_iface() {  # check_iface <имя> <порт> <слой>
     local i="$1" p="$2" layer="$3" unit
     [ "$layer" = 3 ] && unit="awg3@$i" || unit="awg-quick@$i"
@@ -79,6 +125,8 @@ if [ "$LAYER2" = 1 ]; then
     else bad "модуль amneziawg недоступен — dkms status"; fi
     check_iface "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-0}" 2
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
+    check_ports "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-}" "$DEST/clients/antizapret"
+    check_ports "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-}" "$DEST/clients/vpn"
 fi
 
 if [ "$LAYER3" = 1 ]; then
@@ -87,6 +135,8 @@ if [ "$LAYER3" = 1 ]; then
     else bad "нет amneziawg-go"; fi
     check_iface "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-0}" 3
     check_iface "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-0}" 3
+    check_ports "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-}" "$DEST/clients/antizapret3"
+    check_ports "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-}" "$DEST/clients/vpn3"
     # Параметры 3.0 живут только в памяти демона — спрашиваем через UAPI.
     # Но их отсутствие само по себе НЕ поломка: пресеты router и low объявлены
     # без header protection, паддинга и таймингов. Раньше доктор в обоих случаях
