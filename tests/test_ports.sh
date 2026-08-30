@@ -40,9 +40,9 @@ mk() {  # mk <каталог> <порт сервера> <порт в конфи�
 run() {  # run <каталог> <объявленный порт> → вывод проверки
     # shellcheck disable=SC2034  # AWG_DIR читает вырезанная из доктора функция
     ( AWG_DIR="$1/etc"
-      ok()   { printf 'OK %s\n' "$1"; }
-      bad()  { printf 'BAD %s\n' "$1"; }
-      warn() { printf 'WARN %s\n' "$1"; }
+      ok()   { printf 'OK %s\n' "$*"; }
+      bad()  { printf 'BAD %s\n' "$*"; }
+      warn() { printf 'WARN %s\n' "$*"; }
       eval "$FN"
       check_ports antizapret-awg "$2" "$1/clients" )
 }

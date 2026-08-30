@@ -43,9 +43,9 @@ mk() {  # mk <каталог> <хост1> [хост2 …]
 }
 
 hosts() {  # hosts <объявленный> <каталог> → вывод проверки
-    ( ok()   { printf 'OK %s\n' "$1"; }
-      bad()  { printf 'BAD %s\n' "$1"; }
-      warn() { printf 'WARN %s\n' "$1"; }
+    ( ok()   { printf 'OK %s\n' "$*"; }
+      bad()  { printf 'BAD %s\n' "$*"; }
+      warn() { printf 'WARN %s\n' "$*"; }
       eval "$HOSTFN"
       check_client_hosts "$1" "$2" antizapret-awg )
 }
