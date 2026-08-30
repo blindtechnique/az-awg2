@@ -192,11 +192,19 @@ regen() {  # regen <каталог>
 head_ "1. --update вообще не доходит до профиля и клиентов"
 # Самое сильное свойство перехода «обновить код»: оно структурное, а не
 # вычисляемое. Ветка возвращается ДО plan_services, gen_obfuscation и regen-all.
-upd_start="$(grep -n 'if \[ "\$UPDATE" = 1 \]; then' patches/antizapret-awg-integration.sh | cut -d: -f1)"
+# Ветка берётся из main(), а не первая попавшаяся: с появлением plan_report
+# таких строк в файле стало три, переменная делалась многострочной, и
+# сравнение номеров превращалось в сравнение строк («1007» < «849…»).
+main_at="$(grep -n '^main() {' patches/antizapret-awg-integration.sh | cut -d: -f1)"
+upd_start="$(awk -F: -v m="$main_at" '$1>m' <(grep -n 'if \[ "\$UPDATE" = 1 \]; then' \
+             patches/antizapret-awg-integration.sh) | head -1 | cut -d: -f1)"
 upd_ret="$(awk -v s="$upd_start" 'NR>s && /^        return$|^        return 0$/{print NR; exit}' \
            patches/antizapret-awg-integration.sh)"
 for what in plan_services gen_obfuscation regen-all; do
+    # grep -v по комментариям: слово «regen-all» встречается и в пояснениях,
+    # а мерить надо вызов.
     ln="$(grep -n -- "$what" patches/antizapret-awg-integration.sh \
+          | grep -v ':[[:space:]]*#' \
           | awk -F: -v s="$upd_start" '$1>s {print $1; exit}')"
     if [ -n "$upd_ret" ] && [ -n "$ln" ] && [ "$ln" -gt "$upd_ret" ]; then
         ok "$what вызывается только после выхода из ветки --update"

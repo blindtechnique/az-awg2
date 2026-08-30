@@ -79,6 +79,9 @@ WG_DIR="/etc/wireguard"
 OVERLAY="$(dirname "$(readlink -f "$0")")/../overlay"
 DEST="/opt/antizapret-awg"
 SERVICES="$AWG_DIR/services.env"
+# Метка незавершённой миграции: лежит рядом с планом сервисов, содержит режим,
+# из которого мигрировали. Существует только между началом и концом do_migrate.
+MIGRATE_MARK="$AWG_DIR/.migrate-in-progress"
 
 log() { printf '\033[1;32m[integration]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[integration]\033[0m %s\n' "$*" >&2; }
@@ -677,12 +680,25 @@ do_migrate() {
     # shellcheck disable=SC1090
     . "$SERVICES"
     local old_mode="${MODE:-replace}"
-    if [ "$old_mode" = parallel ]; then
+    # Метка незавершённой операции важнее записанного режима. write_services
+    # пишет MODE=parallel вторым шагом, а восстановление ванили — пятым:
+    # смерть между ними оставляла «заявлено parallel, работа не доделана», и
+    # повторный запуск коротил ровно здесь, выходя с кодом 0. Вместе с MODE
+    # терялся и старый режим, то есть доделать было уже нечем — метка хранит
+    # его и снимается последним шагом.
+    if [ -s "$MIGRATE_MARK" ]; then
+        old_mode="$(cat "$MIGRATE_MARK")"
+        log "Найдена незавершённая миграция ($old_mode → parallel) — доделываю"
+    elif [ "$old_mode" = parallel ]; then
         log "Уже режим parallel — миграция не нужна"; return 0
     fi
     local old_az_iface="$AZ_IFACE" old_vpn_iface="$VPN_IFACE"
     local old_az_sub="$AZ_SUBNET" old_vpn_sub="$VPN_SUBNET"
     log "Миграция $old_mode → parallel…"
+
+    # Метку кладём ДО первой необратимой записи, иначе смысла в ней нет.
+    mkdir -p "$(dirname "$MIGRATE_MARK")"
+    printf '%s\n' "$old_mode" > "$MIGRATE_MARK"
 
     # новый план (интерфейсы/подсети/рандомные порты); закреплённые 51xxx/52xxx
     # отбрасываются внутри plan_services
@@ -756,6 +772,9 @@ do_migrate() {
     _rewrite_client_confs vpn        "$old_vpn_sub" "$VPN_SUBNET" "$VPN_PORT"
 
     echo
+    # Снимаем последним шагом: до этой строки операция считается незавершённой.
+    rm -f "$MIGRATE_MARK"
+
     log "✅ Миграция завершена. ВАЖНО: всем клиентам AmneziaWG нужно раздать"
     log "   обновлённые конфиги/QR из /opt/antizapret-awg/clients/ —"
     if [ "$old_mode" = keep ]; then
