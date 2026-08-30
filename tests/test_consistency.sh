@@ -168,6 +168,83 @@ case "$out" in
     *) bad "чужой файл посчитан или сломал проверку" "$out" ;;
 esac
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "8. Понижение профиля не оставляет параметров 3.0 от прежнего"
+# apply_to_server писал <iface>.v3 только `if [ -n "$V3_BLOCK" ]` — при пустом
+# блоке файл не переписывался И НЕ удалялся. Пустым блок становится штатно:
+# пресеты router и low объявлены без header protection. Значит понижение
+# medium → router оставляло прежний .v3, датапас применял его на
+# ExecStartPost, сервер продолжал ждать header protection, а клиентские
+# конфиги уже перевыпущены без неё — не подключался НИКТО.
+AP="$(sed -n '/^apply_to_server()/,/^}$/p' overlay/bin/awg-obfuscation.sh)"
+if [ -z "$AP" ]; then
+    bad "не нашли apply_to_server в overlay/bin/awg-obfuscation.sh" "мерить нечего"
+else
+    D="$WORK/v3"; rm -rf "$D"; mkdir -p "$D"
+    printf '[Interface]\nPrivateKey = SRV\n\n[Peer]\nPublicKey = P\n' > "$D/awgX.conf"
+    printf 'header_protection_key=СТАРЫЙ\n' > "$D/awgX.v3"
+    # shellcheck disable=SC2034  # читает вырезанная apply_to_server
+    ( IFACE_BLOCK="Jc = 4"; V3_BLOCK=""
+      log() { :; }; err() { :; }
+      eval "$AP"
+      apply_to_server "$D/awgX.conf" awgX ) >/dev/null 2>&1
+    [ -f "$D/awgX.v3" ] \
+        && bad "прежний .v3 остался при пустом профиле" \
+               "датапас применит его, и сервер разойдётся со всеми выданными конфигами" \
+        || ok "прежний .v3 убран"
+
+    # А при непустом блоке файл обязан перезаписаться, а не исчезнуть.
+    printf 'header_protection_key=СТАРЫЙ\n' > "$D/awgX.v3"
+    # shellcheck disable=SC2034  # читает вырезанная apply_to_server
+    ( IFACE_BLOCK="Jc = 4"; V3_BLOCK="header_protection_key=НОВЫЙ"
+      log() { :; }; err() { :; }
+      eval "$AP"
+      apply_to_server "$D/awgX.conf" awgX ) >/dev/null 2>&1
+    if grep -q 'НОВЫЙ' "$D/awgX.v3" 2>/dev/null; then
+        ok "непустой профиль перезаписывает .v3"
+    else
+        bad "непустой профиль не записал .v3" "$(cat "$D/awgX.v3" 2>/dev/null)"
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "9. Застрявший .v3 виден и без демона"
+VS="$(sed -n '/^check_v3_stale()/,/^}$/p' "$DOC")"
+if [ -z "$VS" ]; then
+    bad "не нашли check_v3_stale в $DOC" "мерить нечего"
+else
+    vs() {  # vs <содержимое .v3 | -> нет файла> <объявлена ли в профиле>
+        local d="$WORK/vs"; rm -rf "$d"; mkdir -p "$d"
+        [ "$1" = "-" ] || printf '%s\n' "$1" > "$d/i.v3"
+        ( ok()   { printf 'OK %s\n' "$*"; }
+          bad()  { printf 'BAD %s\n' "$*"; }
+          warn() { printf 'WARN %s\n' "$*"; }
+          eval "$VS"
+          check_v3_stale "$d/i.v3" "$2" router )
+    }
+    out="$(vs 'header_protection_key=СТАРЫЙ' 0)"
+    case "$out" in
+        *BAD*) ok "ключ есть, профиль его не объявляет — поломка названа" ;;
+        *) bad "застрявший ключ пропущен" "[$out]" ;;
+    esac
+    out="$(vs 'header_protection_key=НОРМА' 1)"
+    case "$out" in
+        *BAD*|*WARN*) bad "жалоба там, где профиль ключ объявляет" "[$out]" ;;
+        *) ok "объявленный ключ жалобы не вызывает" ;;
+    esac
+    out="$(vs - 0)"
+    case "$out" in
+        *BAD*|*WARN*) bad "жалоба при отсутствии .v3" "[$out]" ;;
+        *) ok "нет файла — нет разговора" ;;
+    esac
+    out="$(vs 'rekey_timeout=5' 0)"
+    case "$out" in
+        *BAD*|*WARN*) bad "жалоба на .v3 без ключа защиты заголовка" "[$out]" ;;
+        *) ok ".v3 без header_protection_key не трогаем" ;;
+    esac
+fi
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail
