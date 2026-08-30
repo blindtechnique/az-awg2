@@ -343,12 +343,22 @@ plan_services() {
     # всех выданных конфигов. Пересчёт из конфига ванили на каждом прогоне
     # означал бы, что её переезд на другой диапазон уводит сервер, а у клиентов
     # остаётся прежний адрес — regen-all это не чинит, он адреса не трогает.
-    local pin_az="" pin_vpn=""
+    local pin_az="" pin_vpn="" pin_az3="" pin_vpn3=""
     if [ -f "$SERVICES" ]; then
         # shellcheck disable=SC1090
         pin_az="$(. "$SERVICES" 2>/dev/null; echo "${AZ_SUBNET:-}")"
         # shellcheck disable=SC1090
         pin_vpn="$(. "$SERVICES" 2>/dev/null; echo "${VPN_SUBNET:-}")"
+        # Слой 3.0 закрепляется ТАК ЖЕ. Раньше он пересчитывался на каждом
+        # прогоне, то есть обоснование выше было написано и не применено к нему
+        # двумя строками ниже. Достижимо не только настоящим переездом ванили:
+        # _subnet_of при нечитаемом её конфиге отдаёт запасное значение, и один
+        # такой прогон навсегда сдвигал подсети 3.0, пока у клиентов оставался
+        # прежний Address.
+        # shellcheck disable=SC1090
+        pin_az3="$(. "$SERVICES" 2>/dev/null; echo "${AZ3_SUBNET:-}")"
+        # shellcheck disable=SC1090
+        pin_vpn3="$(. "$SERVICES" 2>/dev/null; echo "${VPN3_SUBNET:-}")"
     fi
     AZ_SUBNET="${pin_az:-${az_base%.*}.$(( ${az_base##*.} + 1 ))}"
     VPN_SUBNET="${pin_vpn:-${vpn_base%.*}.$(( ${vpn_base##*.} + 1 ))}"
@@ -357,8 +367,10 @@ plan_services() {
     # Слой 3.0 — ещё +1 к третьему октету, чтобы не пересечься со слоем 2.0.
     # Правила ванильного AntiZapret ходят по агрегатам /15 и /16, поэтому
     # NAT/DNS/защиты покрывают и эти подсети автоматически.
-    AZ3_IFACE=antizapret-awg3; AZ3_SUBNET="${az_base%.*}.$(( ${az_base##*.} + 2 ))"
-    VPN3_IFACE=vpn-awg3;       VPN3_SUBNET="${vpn_base%.*}.$(( ${vpn_base##*.} + 2 ))"
+    AZ3_IFACE=antizapret-awg3
+    AZ3_SUBNET="${pin_az3:-${az_base%.*}.$(( ${az_base##*.} + 2 ))}"
+    VPN3_IFACE=vpn-awg3
+    VPN3_SUBNET="${pin_vpn3:-${vpn_base%.*}.$(( ${vpn_base##*.} + 2 ))}"
     # у 3.0 транспортный паддинг S4 отъедает место — MTU ниже, чем у 2.0
     MTU3=1380
 
