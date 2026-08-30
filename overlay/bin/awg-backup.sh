@@ -106,7 +106,19 @@ do_restore() {
 
     log "Восстановление файлов…"
     mkdir -p "$AWG_DIR" "$AZ/config" /etc/knot-resolver "$AZ/client" "$DEST"
-    [ -d "$stage/openvpn/easyrsa3" ] && { rm -rf /etc/openvpn/easyrsa3; cp -r "$stage/openvpn/easyrsa3" /etc/openvpn/; }
+    # НЕ «снести и положить»: это единственный шаг восстановления, который
+    # делает состояние хуже исходного, а не просто неполным. Смерть между rm и
+    # cp оставляла систему вообще без PKI ванильного OpenVPN, и взять его уже
+    # неоткуда — в архиве он есть, но восстановление до него не дошло.
+    # Кладём рядом, подменяем переименованием: окно сужается до одного rename.
+    if [ -d "$stage/openvpn/easyrsa3" ]; then
+        rm -rf /etc/openvpn/easyrsa3.restore
+        cp -r "$stage/openvpn/easyrsa3" /etc/openvpn/easyrsa3.restore
+        rm -rf /etc/openvpn/easyrsa3.old
+        [ -d /etc/openvpn/easyrsa3 ] && mv /etc/openvpn/easyrsa3 /etc/openvpn/easyrsa3.old
+        mv /etc/openvpn/easyrsa3.restore /etc/openvpn/easyrsa3
+        rm -rf /etc/openvpn/easyrsa3.old
+    fi
     cp "$stage"/amneziawg/* "$AWG_DIR/" 2>/dev/null || true
     cp "$stage"/config/* "$AZ/config/" 2>/dev/null || true
     cp "$stage"/knot/* /etc/knot-resolver/ 2>/dev/null || true

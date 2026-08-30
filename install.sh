@@ -725,7 +725,12 @@ migrate_layer() {
         exit 1
     fi
     local cur; cur="$(. /etc/amnezia/amneziawg/services.env 2>/dev/null; echo "${MODE:-replace}")"
-    if [ "$cur" = parallel ]; then
+    # Метка незавершённой миграции важнее записанного режима: интеграция пишет
+    # MODE=parallel вторым шагом, и после смерти на любом из следующих здесь
+    # коротило бы на «миграция не нужна» — то есть штатный путь до починки не
+    # доходил вовсе. Имя файла продублировано намеренно: install.sh не читает
+    # переменные интеграции, и связь между ними держит тест.
+    if [ "$cur" = parallel ] && [ ! -s /etc/amnezia/amneziawg/.migrate-in-progress ]; then
         log "Уже режим parallel — миграция не нужна."
         exit 0
     fi

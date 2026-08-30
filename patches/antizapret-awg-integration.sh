@@ -686,19 +686,39 @@ do_migrate() {
     # повторный запуск коротил ровно здесь, выходя с кодом 0. Вместе с MODE
     # терялся и старый режим, то есть доделать было уже нечем — метка хранит
     # его и снимается последним шагом.
+    local resumed=0
     if [ -s "$MIGRATE_MARK" ]; then
-        old_mode="$(cat "$MIGRATE_MARK")"
+        # shellcheck disable=SC1090
+        . "$MIGRATE_MARK"
+        old_mode="${MARK_MODE:-$old_mode}"
+        resumed=1
         log "Найдена незавершённая миграция ($old_mode → parallel) — доделываю"
     elif [ "$old_mode" = parallel ]; then
         log "Уже режим parallel — миграция не нужна"; return 0
     fi
+    # При ПОВТОРЕ имена старых интерфейсов брать из services.env нельзя: он уже
+    # перезаписан, old_if совпал бы с new_if, ветка переименования пропустилась
+    # бы целиком — а прогон всё равно дошёл бы до «✅ Миграция завершена».
+    # Поэтому на этот случай они лежат в самой метке.
     local old_az_iface="$AZ_IFACE" old_vpn_iface="$VPN_IFACE"
+    if [ "$resumed" = 1 ]; then
+        old_az_iface="${MARK_AZ_IFACE:-$old_az_iface}"
+        old_vpn_iface="${MARK_VPN_IFACE:-$old_vpn_iface}"
+    fi
     local old_az_sub="$AZ_SUBNET" old_vpn_sub="$VPN_SUBNET"
     log "Миграция $old_mode → parallel…"
 
     # Метку кладём ДО первой необратимой записи, иначе смысла в ней нет.
     mkdir -p "$(dirname "$MIGRATE_MARK")"
-    printf '%s\n' "$old_mode" > "$MIGRATE_MARK"
+    # Кладём всё, что понадобится повтору и чего он уже не найдёт в
+    # services.env после первой же записи.
+    {
+        printf 'MARK_MODE=%s\n' "$old_mode"
+        printf 'MARK_AZ_IFACE=%s\n' "$AZ_IFACE"
+        printf 'MARK_VPN_IFACE=%s\n' "$VPN_IFACE"
+        printf 'MARK_AZ_SUBNET=%s\n' "$AZ_SUBNET"
+        printf 'MARK_VPN_SUBNET=%s\n' "$VPN_SUBNET"
+    } > "$MIGRATE_MARK"
 
     # новый план (интерфейсы/подсети/рандомные порты); закреплённые 51xxx/52xxx
     # отбрасываются внутри plan_services
