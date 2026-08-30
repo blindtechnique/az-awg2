@@ -131,6 +131,70 @@ check_ports() {  # check_ports <имя_интерфейса> <объявленн
     fi
 }
 
+
+# Объявленный адрес — из живого файла ванили, как его берут client-awg.sh и
+# бот. НЕ из $AWG_DIR/server_host: тот приезжает из архива и после переноса
+# содержит адрес старой машины — сверка молчала бы ровно тогда, когда нужна.
+AZ_HOST="$( [ -f /root/antizapret/setup ] && . /root/antizapret/setup 2>/dev/null; printf '%s' "${WIREGUARD_HOST:-}" )"
+
+# ── хост в выданных конфигах ────────────────────────────────────────────────
+# Endpoint пишется ровно в одном месте (add_client) и всегда из единственного
+# объявленного хоста. Значит несовпадение — всегда настоящее расхождение, и
+# сверка эта не ходит в сеть: файл против файла, без ложных тревог за NAT.
+# regen-all его НЕ чинит: он правит только строки обфускации, сохраняя ключи,
+# IP и peer, — поэтому в подсказке сказано «раздать заново», а не «пересобрать».
+ep_host() {  # ep_host <строка Endpoint без имени поля>
+    local e="$1"
+    case "$e" in
+        "[""$"*|"["*) e="${e#[}"; printf '%s' "${e%%]*}"; return ;;
+    esac
+    # хост — всё до ПОСЛЕДНЕГО двоеточия; без двоеточий вся строка (битый
+    # Endpoint без порта тоже надо увидеть, а не молча принять за хост)
+    case "$e" in
+        *:*) printf '%s' "${e%:*}" ;;
+        *)   printf '%s' "$e" ;;
+    esac
+}
+# Скобки снимаются с ОБЕИХ сторон: ep_host отдаёт адрес уже без них, а
+# объявленное значение может быть записано и так, и так — иначе одна и та
+# же машина выглядела бы расхождением сама с собой.
+norm_host() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\.$//; s/^\[//; s/\]$//'; }
+
+check_client_hosts() {  # check_client_hosts <объявленный хост> <каталог> <метка>
+    local cldir="$2" label="$3" f raw h n=0 diff_n=0 sample="" broken=0
+    local want; want="$(norm_host "$1")"
+    [ -d "$cldir" ] || return 0
+    for f in "$cldir"/*-am.conf; do
+        [ -f "$f" ] || continue
+        raw="$(sed -n 's/^Endpoint *= *//p' "$f" 2>/dev/null | head -1 || true)"
+        [ -n "$raw" ] || continue          # нет Endpoint — не наш файл
+        h="$(norm_host "$(ep_host "$raw")")"
+        if [ -z "$h" ]; then
+            bad "$(basename "$f"): в Endpoint нет адреса сервера ($raw)" \
+                "этот конфиг не подключится ни при каких настройках"
+            broken=$((broken + 1))
+            continue
+        fi
+        n=$((n + 1))
+        [ -n "$want" ] || continue          # объявленного нет — сравнивать не с чем
+        if [ "$h" != "$want" ]; then
+            diff_n=$((diff_n + 1))
+            [ -n "$sample" ] || sample="$(basename "$f") → $h"
+        fi
+    done
+    [ "$n" = 0 ] && return 0
+    if [ -z "$want" ]; then
+        [ "$broken" = 0 ] && return 0
+        return 0
+    fi
+    if [ "$diff_n" = 0 ]; then
+        ok "$label: у всех $n конфигов Endpoint на $want"
+    else
+        warn "$label: $diff_n из $n конфигов выданы на другой адрес ($sample), объявлен $want"
+        warn "  этим клиентам надо раздать конфиги заново — regen-all адрес не меняет"
+    fi
+}
+
 check_iface() {  # check_iface <имя> <порт> <слой>
     local i="$1" p="$2" layer="$3" unit
     [ "$layer" = 3 ] && unit="awg3@$i" || unit="awg-quick@$i"
@@ -160,6 +224,8 @@ if [ "$LAYER2" = 1 ]; then
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
     check_ports "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-}" "$DEST/clients/antizapret"
     check_ports "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-}" "$DEST/clients/vpn"
+    check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
+    check_client_hosts "$AZ_HOST" "$DEST/clients/vpn" "${VPN_IFACE:-vpn-awg}"
 fi
 
 if [ "$LAYER3" = 1 ]; then
@@ -170,6 +236,8 @@ if [ "$LAYER3" = 1 ]; then
     check_iface "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-0}" 3
     check_ports "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-}" "$DEST/clients/antizapret3"
     check_ports "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-}" "$DEST/clients/vpn3"
+    check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
+    check_client_hosts "$AZ_HOST" "$DEST/clients/vpn3" "${VPN3_IFACE:-vpn-awg3}"
     # Параметры 3.0 живут только в памяти демона — спрашиваем через UAPI.
     # Но их отсутствие само по себе НЕ поломка: пресеты router и low объявлены
     # без header protection, паддинга и таймингов. Раньше доктор в обоих случаях

@@ -546,7 +546,11 @@ switch_services3() {
     fi
 }
 
-# внешний хост (домен/IP) для Endpoint клиентов
+# внешний хост (домен/IP) для Endpoint клиентов.
+# ВНИМАНИЕ: $AWG_DIR/server_host сегодня не читает НИКТО — ни client-awg.sh
+# (он берёт WIREGUARD_HOST из /root/antizapret/setup), ни бот, ни доктор.
+# Полагаться на него нельзя ещё и потому, что он уезжает в архив и после
+# переноса содержит адрес прежней машины.
 resolve_host() {
     if [ -f "$WG_DIR/templates/antizapret-client-am.conf" ]; then
         grep -m1 -oE 'Endpoint = [^:]+' "$WG_DIR/templates/antizapret-client-am.conf" \
