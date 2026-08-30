@@ -83,7 +83,14 @@ load_obfuscation() {
 
 server_pubkey() {
     # cut -d= -f2- сохраняет хвостовой '=' base64-ключа (awk -F' *= *' его обрезал!)
-    grep '^PrivateKey' "$SERVER_CONF" | head -1 | cut -d= -f2- | tr -d ' \t' | awg pubkey
+    # Читаем отдельно, а не одной трубой в awg pubkey: под pipefail grep без
+    # совпадения отдаёт 1, и вся команда умирала молча — без единой строки о
+    # том, что в серверном конфиге нет ключа. Пустой ключ здесь означает
+    # ненастроенный сервер, и сказать это надо вслух.
+    local priv
+    priv="$(grep '^PrivateKey' "$SERVER_CONF" | head -1 | cut -d= -f2- | tr -d ' \t' || true)"
+    [ -n "$priv" ] || die "в $SERVER_CONF нет PrivateKey — сервер не настроен"
+    printf '%s' "$priv" | awg pubkey
 }
 
 # реальный внешний хост: домен из настроек AntiZapret или публичный IP сервера

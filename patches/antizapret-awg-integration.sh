@@ -238,7 +238,10 @@ install_go3() {
         [ "$(printf '%s\ngo1.25.0\n' "$ver" | sort -V | head -1)" = "go1.25.0" ] && return 0
     fi
     log "Установка Go с go.dev…"
-    want="$(curl -fsSL https://go.dev/VERSION?m=text | head -1)"
+    # `|| true` обязателен: без сети curl отдаёт ненулевой код, pipefail его
+    # протаскивает, и присваивание убивало прогон ДО строки ниже — той самой,
+    # что должна была сказать «не удалось узнать версию Go».
+    want="$(curl -fsSL https://go.dev/VERSION?m=text | head -1 || true)"
     [ -n "$want" ] || { err "не удалось узнать версию Go"; exit 1; }
     tgz="${want}.linux-$(dpkg --print-architecture).tar.gz"
     sha="$(curl -fsSL 'https://go.dev/dl/?mode=json' | python3 -c "
@@ -248,7 +251,7 @@ for rel in json.load(sys.stdin):
     if rel.get('version')==want:
         for fl in rel.get('files',[]):
             if fl.get('filename')==f: print(fl.get('sha256','')); break
-" "$want" "$tgz")"
+" "$want" "$tgz" || true)"
     [ -n "$sha" ] || { err "не нашёл sha256 для $tgz"; exit 1; }
     mkdir -p "$SRC"; cd "$SRC"
     curl -fsSLO "https://go.dev/dl/$tgz"

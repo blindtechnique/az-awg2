@@ -62,7 +62,12 @@ check_iface() {  # check_iface <имя> <порт> <слой>
         return
     fi
     if systemctl is-active --quiet "$unit"; then ok "$unit активен"; else bad "$unit не активен"; fi
-    if ss -lunH 2>/dev/null | awk '{print $4}' | grep -qE ":$p\$"; then ok "порт $p слушается"
+    # Поле берём с конца, а не по номеру: `ss -lunH` печатает колонку Netid не
+    # на всех версиях iproute2, и «четвёртая» верна лишь в одной раскладке.
+    # Локальный адрес — предпоследнее поле в любой. Так же считает busy_ports.
+    # grep -q оставлен сознательно: вывод ss короткий, в буфер трубы влезает,
+    # и SIGPIPE тут не случается — а файл к тому же идёт без set -e.
+    if ss -lunH 2>/dev/null | awk '{print $(NF-1)}' | grep -qE ":$p\$"; then ok "порт $p слушается"
     else bad "порт $p не слушается"; fi
     local peers; peers="$(awg show "$i" peers 2>/dev/null | grep -c . || true)"
     ok "$i: клиентов $peers"

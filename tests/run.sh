@@ -82,6 +82,9 @@ run "из какого состояния каким действием и чт�
 head_ "Обфускация: границы"
 run "окно junk-пакетов и неизменность на рабочем MTU" "$PY" tests/test_junk_range.py
 
+head_ "Аудит shell-паттернов"
+run "новых мест того же класса не появилось" "$PY" tests/audit_shell_patterns.py
+
 head_ "Ловушки bash"
 run "занятые порты и адреса, конфиг без ключа"     bash tests/test_bash_traps.sh
 
