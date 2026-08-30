@@ -363,6 +363,48 @@ check_live() {  # check_live <имя интерфейса> <серверный �
     return 0
 }
 
+# ── копия параметров для датапаса ───────────────────────────────────────────
+# <iface>.env пишет установщик, а читает датапас, поднимая интерфейс. Если она
+# разошлась с services.env, датапас настроит интерфейс по своей копии, а весь
+# остальной проект будет считать иначе — и никто об этом не скажет.
+check_iface_env() {  # check_iface_env <иф> <подсеть> <порт> <mtu> <wan>
+    local i="$1" want_sub="$2" want_port="$3" want_mtu="$4" want_wan="$5"
+    local f="$AWG_DIR/${i}.env" got nat
+    [ -f "$f" ] || return 0            # нет файла — датапас и не работает
+    _fld() { sed -n "s/^$1=//p" "$f" 2>/dev/null | head -1 || true; }
+    nat="$(_fld NAT)"
+
+    got="$(_fld SUBNET)"
+    if [ -n "$got" ] && [ -n "$want_sub" ] && [ "$got" != "${want_sub}.0/24" ]; then
+        if [ "${nat:-0}" = 1 ]; then
+            bad "$i: в $f подсеть $got, а объявлена ${want_sub}.0/24" \
+                "MASQUERADE встанет на чужой диапазон — клиенты подключатся, интернета не увидят"
+        else
+            warn "$i: в $f подсеть $got, а объявлена ${want_sub}.0/24" \
+                 "сейчас копия инертна (NAT=0, за него отвечает ваниль), но она устарела"
+        fi
+    fi
+
+    got="$(_fld PORT)"
+    if [ -n "$got" ] && [ -n "$want_port" ] && [ "$got" != "$want_port" ]; then
+        bad "$i: в $f порт $got, а объявлен $want_port" \
+            "интерфейс слушает не там, куда стучатся выданные конфиги"
+    fi
+
+    got="$(_fld MTU)"
+    if [ -n "$got" ] && [ -n "$want_mtu" ] && [ "$got" != "$want_mtu" ]; then
+        warn "$i: в $f MTU $got, а объявлен $want_mtu" \
+             "интерфейс поднимется с чужим MTU — крупные пакеты будут пропадать"
+    fi
+
+    got="$(_fld WAN)"
+    if [ -n "$got" ] && [ -n "$want_wan" ] && [ "$got" != "$want_wan" ]; then
+        bad "$i: в $f внешний интерфейс $got, а объявлен $want_wan" \
+            "MASQUERADE встанет на чужой выход — трафик клиентов наружу не пойдёт"
+    fi
+    return 0
+}
+
 check_peers() {  # check_peers <серверный конфиг> <каталог клиентов> <метка>
     local conf="$1" cldir="$2" label="$3"
     [ -f "$conf" ] || return 0
@@ -467,6 +509,8 @@ if [ "$LAYER2" = 1 ]; then
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
     check_live "${AZ_IFACE:-antizapret-awg}" "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf"
     check_live "${VPN_IFACE:-vpn-awg}" "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf"
+    check_iface_env "${AZ_IFACE:-antizapret-awg}" "${AZ_SUBNET:-}" "${AZ_PORT:-}" "" ""
+    check_iface_env "${VPN_IFACE:-vpn-awg}" "${VPN_SUBNET:-}" "${VPN_PORT:-}" "" ""
     check_ports "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-}" "$DEST/clients/antizapret" AZ_PORT
     check_ports "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-}" "$DEST/clients/vpn" VPN_PORT
     check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
@@ -485,6 +529,8 @@ if [ "$LAYER3" = 1 ]; then
     check_iface "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-0}" 3
     check_live "${AZ3_IFACE:-antizapret-awg3}" "$AWG_DIR/${AZ3_IFACE:-antizapret-awg3}.conf"
     check_live "${VPN3_IFACE:-vpn-awg3}" "$AWG_DIR/${VPN3_IFACE:-vpn-awg3}.conf"
+    check_iface_env "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_SUBNET:-}" "${AZ3_PORT:-}" "" ""
+    check_iface_env "${VPN3_IFACE:-vpn-awg3}" "${VPN3_SUBNET:-}" "${VPN3_PORT:-}" "" ""
     check_ports "${AZ3_IFACE:-antizapret-awg3}" "${AZ3_PORT:-}" "$DEST/clients/antizapret3" AZ3_PORT
     check_ports "${VPN3_IFACE:-vpn-awg3}" "${VPN3_PORT:-}" "$DEST/clients/vpn3" VPN3_PORT
     check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
