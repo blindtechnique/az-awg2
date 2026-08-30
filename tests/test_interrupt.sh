@@ -284,6 +284,10 @@ else
         bash -c "set -euo pipefail
             AWG_DIR=$R/etc; DEST=$R/dest; AZ=$R/az
             RESTORE_MARK=$R/etc/.restore-in-progress
+            # Замок объявлен на уровне файла, а вырезается только тело функции.
+            # Здесь он не при чём: стенд мерит прерывание, а не блокировку —
+            # её проверяет tests/test_restore_integrity.sh на настоящем скрипте.
+            lock_wait() { :; }; lock_drop() { :; }
             log() { :; }; err() { :; }; systemctl() { :; }
             $DR
             do_restore $R/bk.tar.gz" >/dev/null 2>&1

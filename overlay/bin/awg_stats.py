@@ -34,6 +34,43 @@ from datetime import datetime, timezone
 DB_PATH = os.environ.get("AWG_STATS_DB", "/opt/antizapret-awg/stats.db")
 AWG_DIR = os.environ.get("AWG_DIR", "/etc/amnezia/amneziawg")
 
+# ── замок на состояние слоя ──────────────────────────────────────────────────
+# Тот же файл, что берут awg-backup.sh и awg-client.sh: flock(1) и fcntl.flock
+# — это один и тот же flock(2), они видят друг друга. Нужен, потому что
+# восстановление кладёт stats.db поверх живой базы и сносит её журналы -wal
+# и -shm; поллер, пишущий в этот момент, получил бы порванную базу.
+AWG_LOCK = os.environ.get("AWG_LOCK", "/run/antizapret-awg.lock")
+
+
+def state_lock():
+    """Взять замок неблокирующе. Возвращает открытый файл или None.
+
+    Держать его надо ровно до конца записи, поэтому файл возвращается наружу:
+    закроется — отпустится. Ждать нельзя: у oneshot-юнита TimeoutStartSec по
+    умолчанию 90 с, и ожидание кончилось бы SIGTERM посреди транзакции.
+    """
+    try:
+        import fcntl
+    except ImportError:          # не Linux — защищать нечего
+        return None
+    try:
+        fh = open(AWG_LOCK, "w")
+    except OSError as e:
+        print("[awg-stats] не открыть %s: %s — тик без защиты" % (AWG_LOCK, e),
+              file=sys.stderr)
+        return None
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise BusyError()
+    return fh
+
+
+class BusyError(Exception):
+    """Состояние слоя занято другой операцией — тик пропускается."""
+
+
 
 def _have(binary: str) -> bool:
     from shutil import which
@@ -649,7 +686,18 @@ def main():
     if cmd == "init":
         init_db(); print(f"DB готова: {DB_PATH}")
     elif cmd == "poll":
-        poll()
+        # Пропустить тик безопасно: следующий придёт через минуту, а счётчики
+        # берутся из ядра нарастающим итогом, не из разницы с прошлым тиком.
+        try:
+            fh = state_lock()
+        except BusyError:
+            print("[awg-stats] состояние слоя занято — пропускаю тик", file=sys.stderr)
+            return
+        try:
+            poll()
+        finally:
+            if fh is not None:
+                fh.close()
     elif cmd == "overview":
         print(overview())
     elif cmd == "server":
