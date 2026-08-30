@@ -259,7 +259,7 @@ if [ -z "$svcs" ]; then
 else
     ok "список каталогов взят из $CL: $svcs"
     for _svc in $svcs; do
-        for _fn in check_ports check_client_hosts check_peers; do
+        for _fn in check_ports check_client_hosts check_peers check_client_mtu; do
             # Закрывающая кавычка обязательна: без неё clients/antizapret
             # совпал бы и с clients/antizapret3.
             if grep -q "^ *$_fn .*clients/$_svc\"" "$DOC"; then
@@ -279,6 +279,80 @@ else
         esac
     done
     ok "лишних каталогов в вызовах нет"
+fi
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "11. MTU у выданных конфигов сверяется с объявленным"
+# regen-all MTU не меняет — он правит только строки обфускации. Значит после
+# смены MTU все выданные конфиги молча остаются на прежнем, и вред тише, чем у
+# порта: соединение встаёт, мелкие запросы ходят, а крупные пакеты пропадают.
+MF="$(sed -n '/^check_client_mtu()/,/^}$/p' "$DOC")"
+if [ -z "$MF" ]; then
+    bad "не нашли check_client_mtu в $DOC" "мерить нечего"
+else
+    mkm() {  # mkm <каталог> <mtu…> — по конфигу на значение, «-» значит без MTU
+        local d="$1"; shift
+        rm -rf "$d"; mkdir -p "$d"
+        local i=0 m
+        for m in "$@"; do
+            i=$((i + 1))
+            if [ "$m" = "-" ]; then
+                printf '[Interface]\nPrivateKey = K%s\n' "$i" > "$d/x-c$i-am.conf"
+            else
+                printf '[Interface]\nPrivateKey = K%s\nMTU = %s\n' "$i" "$m" \
+                    > "$d/x-c$i-am.conf"
+            fi
+        done
+    }
+    mtu() {  # mtu <объявленный> <каталог>
+        ( ok()   { printf 'OK %s\n' "$*"; }
+          bad()  { printf 'BAD %s\n' "$*"; }
+          warn() { printf 'WARN %s\n' "$*"; }
+          eval "$MF"
+          check_client_mtu "$1" "$2" x )
+    }
+
+    D="$WORK/m1"; mkm "$D" 1420 1420 1420
+    out="$(mtu 1420 "$D")"
+    case "$out" in
+        *BAD*|*WARN*) bad "исправное состояние названо расхождением" "$out" ;;
+        *) ok "все совпадают — проверка молчит по существу" ;;
+    esac
+    case "$out" in
+        *"у всех 3 конфигов MTU 1420"*) ok "и сказано, сколько сверено" ;;
+        *) bad "число не названо" "$out" ;;
+    esac
+
+    D="$WORK/m2"; mkm "$D" 1420 1280 1420 1280
+    out="$(mtu 1420 "$D")"
+    case "$out" in
+        *"WARN"*"2 из 4 конфигов другой MTU"*) ok "посчитаны только несовпавшие" ;;
+        *) bad "расхождение не посчитано" "$out" ;;
+    esac
+    case "$out" in *1280*) ok "и показан образец" ;; *) bad "образец не показан" "$out" ;; esac
+    case "$out" in
+        *"regen-all MTU не меняет"*) ok "и сказано, что regen-all тут не поможет" ;;
+        *) bad "подсказка неверная или её нет" "$out" ;;
+    esac
+    case "$out" in
+        *BAD*) bad "названо поломкой" "MTU могли сменить только что, конфиги ещё не розданы" ;;
+        *) ok "это замечание, а не поломка" ;;
+    esac
+
+    D="$WORK/m3"; mkm "$D" 1420 1280
+    out="$(mtu "" "$D")"
+    case "$out" in
+        *WARN*|*BAD*) bad "жалоба при необъявленном MTU" "$out" ;;
+        *) ok "не объявлен — сравнивать не с чем, молчим" ;;
+    esac
+
+    D="$WORK/m4"; mkm "$D" 1420 - 1420
+    out="$(mtu 1420 "$D")"
+    case "$out" in
+        *"у всех 2 конфигов MTU 1420"*) ok "конфиг без строки MTU в счёт не идёт" ;;
+        *) bad "конфиг без MTU посчитан или сломал проверку" "$out" ;;
+    esac
 fi
 
 printf '\n'

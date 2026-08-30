@@ -284,6 +284,32 @@ check_v3_stale() {  # check_v3_stale <путь .v3> <объявлена ли в 
         "файл остался от прежнего профиля — примени текущий заново: awg-obfuscation --v3 --apply"
 }
 
+# ── MTU в выданных конфигах ─────────────────────────────────────────────────
+# regen-all MTU НЕ меняет (он правит только строки обфускации), поэтому после
+# смены MTU выданные конфиги молча остаются на прежнем. Вред тише, чем у порта:
+# соединение встаёт, мелкие запросы ходят, а крупные пакеты пропадают.
+check_client_mtu() {  # check_client_mtu <объявленный MTU> <каталог> <метка>
+    local want="$1" cldir="$2" label="$3" f got n=0 diff_n=0 sample=""
+    [ -n "$want" ] || return 0            # не объявлен — сравнивать не с чем
+    [ -d "$cldir" ] || return 0
+    for f in "$cldir"/*-am.conf; do
+        [ -f "$f" ] || continue
+        got="$(sed -n 's/^MTU *= *//p' "$f" 2>/dev/null | head -1 || true)"
+        [ -n "$got" ] || continue         # в конфиге нет MTU — не наш случай
+        n=$((n + 1))
+        [ "$got" = "$want" ] && continue
+        diff_n=$((diff_n + 1))
+        [ -n "$sample" ] || sample="$(basename "$f") → $got"
+    done
+    [ "$n" = 0 ] && return 0
+    if [ "$diff_n" = 0 ]; then
+        ok "$label: у всех $n конфигов MTU $want"
+    else
+        warn "$label: у $diff_n из $n конфигов другой MTU ($sample), объявлен $want" \
+             "мелкие запросы ходят, крупные пропадают — раздай конфиги заново, regen-all MTU не меняет"
+    fi
+}
+
 check_peers() {  # check_peers <серверный конфиг> <каталог клиентов> <метка>
     local conf="$1" cldir="$2" label="$3"
     [ -f "$conf" ] || return 0
@@ -392,6 +418,8 @@ if [ "$LAYER2" = 1 ]; then
     check_client_hosts "$AZ_HOST" "$DEST/clients/vpn" "${VPN_IFACE:-vpn-awg}"
     check_peers "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
     check_peers "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf" "$DEST/clients/vpn" "${VPN_IFACE:-vpn-awg}"
+    check_client_mtu "${MTU:-}" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
+    check_client_mtu "${MTU:-}" "$DEST/clients/vpn" "${VPN_IFACE:-vpn-awg}"
 fi
 
 if [ "$LAYER3" = 1 ]; then
@@ -406,6 +434,8 @@ if [ "$LAYER3" = 1 ]; then
     check_client_hosts "$AZ_HOST" "$DEST/clients/vpn3" "${VPN3_IFACE:-vpn-awg3}"
     check_peers "$AWG_DIR/${AZ3_IFACE:-antizapret-awg3}.conf" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
     check_peers "$AWG_DIR/${VPN3_IFACE:-vpn-awg3}.conf" "$DEST/clients/vpn3" "${VPN3_IFACE:-vpn-awg3}"
+    check_client_mtu "${MTU3:-}" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
+    check_client_mtu "${MTU3:-}" "$DEST/clients/vpn3" "${VPN3_IFACE:-vpn-awg3}"
     # Параметры 3.0 живут только в памяти демона — спрашиваем через UAPI.
     # Но их отсутствие само по себе НЕ поломка: пресеты router и low объявлены
     # без header protection, паддинга и таймингов. Раньше доктор в обоих случаях
