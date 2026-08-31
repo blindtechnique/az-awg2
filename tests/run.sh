@@ -82,6 +82,8 @@ run "--preset не затирает ответы, которых не спраш
     bash tests/test_state_preserve.sh
 run "regen-all: пропущенный слой слышен и виден по коду" \
     bash tests/test_regen_skip.sh
+run "приватные ключи клиентов закрыты, и старые конфиги чинятся" \
+    bash tests/test_secret_perms.sh
 
 head_ "Диагностика"
 run "слой 3.0: оба интерфейса и разные причины отказа" \

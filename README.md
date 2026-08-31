@@ -188,10 +188,15 @@ awg-doctor --json                          # для мониторинга
 # статистика
 /opt/antizapret-awg/venv/bin/python /opt/antizapret-awg/awg_stats.py overview
 # бэкап
-awg-backup backup                         # → tar.gz
+awg-backup backup                         # → /root/awg-backup-<ip>.tar.gz
 awg-backup backup --encrypt               # → tar.gz.enc (AES-256, спросит пароль)
 awg-backup restore файл.tar.gz            # .enc распознаётся и расшифровывается
 ```
+
+> Архив кладётся в `/root`, а каталог меняется через `AWG_BACKUP_DIR`. Не в
+> `/root/antizapret`: полное обновление AntiZapret сносит этот каталог целиком
+> (об этом ниже), и единственная копия приватных ключей сервера и всех клиентов
+> пропала бы вместе с ним.
 
 > Вызовы `client.sh` из бота сериализуются через `flock`, чтобы не конфликтовать с админ-панелью, которая пишет в те же файлы.
 

@@ -204,7 +204,16 @@ ttl_seconds() {
 add_client() {
     local name="$1" svc="${2:-antizapret}" ttl="${3:-}"
     resolve_service "$svc"; load_obfuscation
+    # Всё, что создаётся дальше, — секрет: в .conf лежит приватный ключ клиента
+    # и preshared-key, и то же самое целиком повторяется в QR-.png и в
+    # vpn://-ссылке рядом. Без umask они получались 0644 в каталоге 0755, то
+    # есть читались любым локальным пользователем. Ключи клиентов существуют
+    # ТОЛЬКО здесь, поэтому утечка окончательна — закрыть её задним числом
+    # нельзя, можно лишь перевыпустить всех. umask стоит ДО mkdir: иначе сам
+    # каталог остаётся проходным.
+    umask 077
     local outdir="${CLIENT_DIR}/${svc}"; mkdir -p "$outdir"
+    chmod 700 "$outdir" 2>/dev/null || true   # каталог мог остаться с прежних версий
     local conf="${outdir}/${svc}-${name}-am.conf"
     [ -f "$conf" ] && die "Клиент '$name' ($svc) уже существует"
 
@@ -255,6 +264,7 @@ Endpoint = ${host}:${PORT}
 AllowedIPs = ${allowed}
 PersistentKeepalive = 15
 EOF
+    chmod 600 "$conf"
 
     # peer на сервере: в рантайме (awg set) + персистентно (в .conf)
     awg set "$IFACE" peer "$cpub" preshared-key <(printf '%s' "$cpsk") \
@@ -355,7 +365,7 @@ list_clients() {
 
 # ── пересоздать конфиги всех клиентов (после смены обфускации) ────────────────
 regen_all() {
-    local svc conf name before after prof n_left missed=0
+    local svc conf name before after prof v3 n_left missed=0
     # сколько конфигов реально изменилось: см. итог в конце функции
     local same=0 changed=0 changed_list=""
     # shellcheck disable=SC1090
@@ -367,9 +377,9 @@ regen_all() {
     for svc in antizapret vpn antizapret3 vpn3; do
         case "$svc" in
             *3) [ "${LAYER3:-0}" = 1 ] || continue
-                prof="${AWG_DIR}/obfuscation3.env" ;;
+                prof="${AWG_DIR}/obfuscation3.env"; v3=" --v3" ;;
             *)  [ "${LAYER2:-1}" = 1 ] || continue
-                prof="${AWG_DIR}/obfuscation.env" ;;
+                prof="${AWG_DIR}/obfuscation.env"; v3="" ;;
         esac
         [ -d "${CLIENT_DIR}/${svc}" ] || continue
         # Пропуск слоя без профиля остаётся — иначе die() внутри
@@ -383,7 +393,7 @@ regen_all() {
             if [ "$n_left" = 0 ]; then continue; fi
             err "сервис $svc ПРОПУЩЕН: нет профиля $prof"
             err "   $n_left конфигов остались на прежнем профиле — эти клиенты не соединятся"
-            err "   выпусти профиль (awg-obfuscation [--v3] --regenerate --apply) и повтори regen-all"
+            err "   выпусти профиль (awg-obfuscation$v3 --regenerate --apply) и повтори regen-all"
             missed=$((missed + 1))
             continue
         fi

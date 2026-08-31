@@ -11,7 +11,8 @@
 #   * статистику и сроки временных клиентов (/opt/antizapret-awg/stats.db, expiry.tsv)
 #
 # Использование:
-#   awg-backup.sh backup [файл.tar.gz]        # создать (default /opt/antizapret-awg-backup-<ip>.tar.gz)
+#   awg-backup.sh backup [файл.tar.gz]        # создать (default /root/awg-backup-<ip>.tar.gz,
+#                                             #  каталог меняется через AWG_BACKUP_DIR)
 #   awg-backup.sh restore <файл.tar.gz>       # восстановить и перезапустить сервисы
 set -euo pipefail
 
@@ -19,6 +20,13 @@ AWG_DIR="/etc/amnezia/amneziawg"
 # Метка незавершённого восстановления — по образцу .migrate-in-progress.
 RESTORE_MARK="$AWG_DIR/.restore-in-progress"
 AZ="/root/antizapret"
+# Куда класть архив. НЕ в $AZ: полное обновление AntiZapret штатным
+# setup.sh делает `rm -rf /root/antizapret` — ровно поэтому состояние слоя
+# и вынесено оттуда в /opt. Архив лежал внутри и пропадал вместе с
+# каталогом, унося единственную копию приватных ключей сервера и всех
+# клиентов. Каталог по умолчанию тот же, что у awg3, и так же
+# переопределяется.
+OUT_DIR="${AWG_BACKUP_DIR:-/root}"
 # Каталог слоя. Раньше здесь стояло "$AZ/awg", то есть /root/antizapret/awg —
 # путь, которого не создаёт никто: весь остальной репозиторий (install.sh,
 # antizapret-awg-integration.sh, awg-doctor.sh, awg_stats.py, client-awg.sh)
@@ -92,7 +100,7 @@ lock_drop() { { exec 9>&-; } 2>/dev/null || true; }
 
 
 do_backup() {
-    local out="${1:-$AZ/awg-backup-$(server_ip).tar.gz}"
+    local out="${1:-$OUT_DIR/awg-backup-$(server_ip).tar.gz}"
     local rc=0
     local stage; stage="$(mktemp -d)"
     # Счёт клиентских конфигов обязан идти под замком: иначе параллельный

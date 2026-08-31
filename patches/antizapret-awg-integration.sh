@@ -277,6 +277,18 @@ for rel in json.load(sys.stdin):
 deploy_overlay() {
     log "Развёртывание overlay в $DEST"
     mkdir -p "$DEST"
+    # Права на УЖЕ выданные конфиги. До этой версии клиентские профили
+    # создавались без umask — 0644 в каталоге 0755, — и приватные ключи всех
+    # клиентов читал любой локальный пользователь. Новые файлы закрыты в
+    # add_client, но на работающем сервере лежат старые, и сами они не
+    # починятся. Поэтому чиним при каждом прогоне, а не только при установке.
+    if [ -d "$DEST/clients" ]; then
+        chmod 700 "$DEST/clients" 2>/dev/null \
+            || err "не удалось закрыть $DEST/clients — приватные ключи клиентов остаются читаемыми"
+        find "$DEST/clients" -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
+        find "$DEST/clients" -type f -exec chmod 600 {} + 2>/dev/null \
+            || err "не удалось закрыть файлы в $DEST/clients — приватные ключи клиентов остаются читаемыми"
+    fi
     cp "$OVERLAY/obfuscation/awg_obfuscate.py" "$OVERLAY/bin/awg-obfuscation.sh" \
        "$OVERLAY/bin/awg-export.py" "$OVERLAY/bin/client-awg.sh" \
        "$OVERLAY/bin/awg-backup.sh" "$OVERLAY/bin/awg-reintegrate.sh" \

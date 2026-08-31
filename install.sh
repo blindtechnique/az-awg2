@@ -320,6 +320,14 @@ ask_port() {  # ask_port <подпись> <исключить> → PORT_ANSWER (
     done
 }
 
+# Одно значение из сохранённого install-state.env. Читаем в подоболочке: файл
+# объявляет десяток переменных, и точка в текущей области видимости затёрла бы
+# то, что прогон уже решил.
+state_val() {  # state_val <имя ключа> → значение или пусто
+    [ -f "$STATE" ] || return 0
+    ( . "$STATE" 2>/dev/null || true; printf '%s' "${!1:-}" )
+}
+
 collect_choices() {
     AZ_PORT_CHOICE=""; VPN_PORT_CHOICE=""
     [ -n "$CLI_PORTS" ] && parse_cli_ports
@@ -357,22 +365,27 @@ collect_choices() {
     case "$AWG_VER" in 2|3|both) ;; *) log "неизвестное значение --awg '$AWG_VER', беру both"; AWG_VER=both ;; esac
 
     if [ -n "$CLI_PRESET" ]; then
-        PRESET="$CLI_PRESET"; TEMPLATE="$CLI_TEMPLATE"; FP="${CLI_FP:-chrome}"
-        PRESET3="$CLI_PRESET3"; TEMPLATE3="$CLI_TEMPLATE3"
-        # Не спрашивали — не меняем. Диалоги MTU и домена мимикрии лежат в
-        # ветке else, которую эта ветка пропускает, поэтому раньше в state
-        # уезжали ЛОКАЛЬНЫЕ умолчания MTU=1320 и HOST='' — поверх ответов
-        # владельца. На сервере с MTU 1280 одна команда `--preset paranoid`
-        # молча возвращала 1320, и взять своё значение было больше неоткуда.
-        # Флагов --mtu и --host у install.sh нет: сюда они приходят только из
-        # state, поэтому исключений у правила нет.
-        if [ -f "$STATE" ]; then
-            local _keep_mtu _keep_host
-            _keep_mtu="$(. "$STATE" 2>/dev/null; printf '%s' "${AWG_MTU:-}")"
-            _keep_host="$(. "$STATE" 2>/dev/null; printf '%s' "${AWG_HOST:-}")"
-            MTU="${_keep_mtu:-$MTU}"   # пусто в state — остаёмся на умолчании
-            HOST="${_keep_host:-$HOST}"
-        fi
+        # Не спрашивали — не меняем. Все диалоги — обфускация, мимикрия, браузер,
+        # MTU, домен — лежат в ветке else, которую эта ветка пропускает. Раньше
+        # сюда уезжали ЛОКАЛЬНЫЕ умолчания (TEMPLATE='', FP=chrome, MTU=1320,
+        # HOST='', PRESET3='') и ложились в state поверх ответов владельца.
+        # Сервер с мимикрией web, браузером firefox, MTU 1280 и отдельным
+        # пресетом 3.0 после одной команды `--preset paranoid` оказывался на
+        # авто/chrome/1320, а слой 3.0 переезжал на пресет слоя 2.0 — пустой
+        # PRESET3 значит «как у 2.0». Вернуть было неоткуда: и install-state.env,
+        # и obfuscation.meta уже перезаписаны.
+        #
+        # Поэтому каждое значение берётся из CLI, если оно там задано, и из
+        # сохранённого состояния, если нет. У MTU и HOST флагов нет вовсе —
+        # они приходят только из state.
+        local _v
+        PRESET="$CLI_PRESET"
+        _v="$(state_val AWG_TEMPLATE)";  TEMPLATE="${CLI_TEMPLATE:-$_v}"
+        _v="$(state_val AWG_FP)";        FP="${CLI_FP:-${_v:-chrome}}"
+        _v="$(state_val AWG_PRESET3)";   PRESET3="${CLI_PRESET3:-$_v}"
+        _v="$(state_val AWG_TEMPLATE3)"; TEMPLATE3="${CLI_TEMPLATE3:-$_v}"
+        _v="$(state_val AWG_MTU)";       MTU="${_v:-$MTU}"
+        _v="$(state_val AWG_HOST)";      HOST="${_v:-$HOST}"
     else
         echo "═══════════════════════════════════════════════════════════════"
         echo "  Обфускация AmneziaWG 2.0 — интенсивность"
