@@ -48,7 +48,7 @@ exit 0
 EOS
     cat > "$d/bin/python3" <<EOS
 #!/bin/sh
-[ "$2" = 1 ] && echo "  header_protection_key = abcd(скрыт)"
+[ "$2" = 1 ] && echo "  header_protection_key = ${STAND_HPK:-deadbeef}…(скрыт)"
 exit 0
 EOS
     printf 'stub\n' > "$d/bin/awg3-uapi.py"
@@ -59,6 +59,11 @@ EOS
         echo 'log(){ echo "[log] $*"; }'
         echo 'err(){ echo "[err] $*"; }'
         echo "V3=$3; KMOD3=0"
+        # Профиль, с которым применитель сверяет ответ демона. Без него он
+        # сверял бы подстроку, то есть «какой-то ключ есть» — а разъехавшийся
+        # ключ означает полный отказ слоя 3.0.
+        printf "AWG_HPK_HEX='%s'\n" "${STAND_PROFILE_HPK:-deadbeef00112233}" > "$d/obf3.env"
+        echo "STATE_ENV=$d/obf3.env"
         [ "$3" = 1 ] && echo 'V3_BLOCK=header_protection_key=dead' || echo 'V3_BLOCK=""'
         echo 'az_iface=antizapret-awg3; vpn_iface=vpn-awg3'
         echo 'ifaces="antizapret-awg3 vpn-awg3"'
