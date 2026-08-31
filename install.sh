@@ -342,6 +342,15 @@ collect_choices() {
     local PRESET="medium" TEMPLATE="" FP="chrome" MTU=1320 HOST="" BOT_INSTALL=0 BOT_TOKEN="" BOT_ADMINS=""
     local PRESET3="" TEMPLATE3=""      # пусто = как у слоя 2.0
     local AWG_VER="${CLI_AWG_VER:-}"
+    local _saved_ver; _saved_ver="$(state_val AWG_VER)"
+    # --preset означает «поменяй обфускацию», а не «пересобери сервер»: он не
+    # спрашивает ни MTU, ни домен, ни версию слоя — значит и менять её не
+    # должен. Без этого одна такая команда на 2.0-сервере доставляла весь слой
+    # 3.0, а `--plan --preset X` показывал при этом прежние слои: план выходит
+    # ДО collect_choices и читает AWG_VER из state, а прогон переспрашивал.
+    if [ -z "$AWG_VER" ] && [ -n "$CLI_PRESET" ] && [ "$RECONFIGURE" != 1 ]; then
+        AWG_VER="$_saved_ver"
+    fi
 
     # ── версия протокола ────────────────────────────────────────────────────
     # 2.0 работает на kernel-модуле, 3.0 — только userspace (в модуле нет
@@ -357,9 +366,20 @@ collect_choices() {
         echo "   2) 3.0        — header protection, content padding, рандомные"
         echo "                   тайминги. Датапас userspace (amneziawg-go),"
         echo "                   собирается из исходников. Нужны свежие клиенты."
-        echo "   3) обе сразу  — два независимых слоя [по умолчанию]."
+        echo "   3) обе сразу  — два независимых слоя."
         echo "                   Клиент заводится в нужный одной командой."
-        ask_pick VER_CHOICE 3 "1 2 3"
+        # Умолчание — то, что на сервере уже стоит. Раньше здесь всегда было
+        # «обе сразу», и Enter на 2.0-сервере означал сборку Go, ещё два
+        # интерфейса, две подсети и два порта — при том что владелец пришёл
+        # сюда менять обфускацию.
+        local _def=3
+        case "$_saved_ver" in
+            2)    _def=1 ;;
+            3)    _def=2 ;;
+            both) _def=3 ;;
+        esac
+        [ -n "$_saved_ver" ] && echo "   Сейчас на сервере: $_saved_ver (Enter — оставить как есть)."
+        ask_pick VER_CHOICE "$_def" "1 2 3"
         case "$VER_CHOICE" in 1) AWG_VER=2 ;; 2) AWG_VER=3 ;; *) AWG_VER=both ;; esac
     fi
     case "$AWG_VER" in 2|3|both) ;; *) log "неизвестное значение --awg '$AWG_VER', беру both"; AWG_VER=both ;; esac
