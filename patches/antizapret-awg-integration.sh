@@ -343,6 +343,40 @@ plan_services() {
     # всех выданных конфигов. Пересчёт из конфига ванили на каждом прогоне
     # означал бы, что её переезд на другой диапазон уводит сервер, а у клиентов
     # остаётся прежний адрес — regen-all это не чинит, он адреса не трогает.
+    # Страж целостности плана. installed() здесь — это просто наличие файла,
+    # поэтому сюда попадает и чужой файл по тому же пути, и свой, обрезанный
+    # убитым прогоном. Без проверки дальше молча подставляются умолчания: порт,
+    # подсеть, имя интерфейса — и выданные конфиги перестают подходить.
+    # Спрашиваем только у включённого слоя: значения выключенного могут быть
+    # пустыми законно.
+    if [ -f "$SERVICES" ]; then
+        local _k _miss=""
+        # shellcheck disable=SC1090
+        local _l2 _l3
+        _l2="$(. "$SERVICES" 2>/dev/null; echo "${LAYER2:-1}")"
+        _l3="$(. "$SERVICES" 2>/dev/null; echo "${LAYER3:-0}")"
+        for _k in AZ_IFACE AZ_PORT AZ_SUBNET VPN_IFACE VPN_PORT VPN_SUBNET; do
+            [ "$_l2" = 1 ] || continue
+            # shellcheck disable=SC1090
+            [ -n "$(. "$SERVICES" 2>/dev/null; eval "printf '%s' \"\${$_k:-}\"")" ] \
+                || _miss="$_miss $_k"
+        done
+        for _k in AZ3_IFACE AZ3_PORT AZ3_SUBNET VPN3_IFACE VPN3_PORT VPN3_SUBNET; do
+            [ "$_l3" = 1 ] || continue
+            # shellcheck disable=SC1090
+            [ -n "$(. "$SERVICES" 2>/dev/null; eval "printf '%s' \"\${$_k:-}\"")" ] \
+                || _miss="$_miss $_k"
+        done
+        if [ -n "$_miss" ]; then
+            err "$SERVICES неполон: нет значений для$_miss"
+            err "Похоже, файл оставил другой установщик или прошлый прогон убили"
+            err "посреди записи. Значения нужны целиком: от порта и подсети"
+            err "зависят все выданные конфиги, и подставить их наугад нельзя."
+            err "Восстанови файл из бэкапа:  awg-backup restore <архив>"
+            exit 1
+        fi
+    fi
+
     local pin_az="" pin_vpn="" pin_az3="" pin_vpn3=""
     if [ -f "$SERVICES" ]; then
         # shellcheck disable=SC1090

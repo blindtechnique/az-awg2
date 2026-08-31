@@ -312,6 +312,66 @@ for f in "$INTEG" overlay/bin/awg-obfuscation.sh; do
     fi
 done
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "10. Обрезанный services.env отвергается, а не принимается за исправный"
+# Стража здесь не было вовсе: обрезанный файл шёл насквозь, и дальше умолчания
+# подставлялись молча — порт, подсеть, имя интерфейса. Выданные конфиги при
+# этом перестают подходить, и никто об этом не говорит.
+GF="$(sed -n '/^    # Страж целостности плана\./,/^    fi$/p' \
+      patches/antizapret-awg-integration.sh)"
+if [ -z "$GF" ]; then
+    bad "не нашли страж целостности" "обрезанный services.env пройдёт насквозь"
+else
+    guard() {  # guard <содержимое services.env> → вывод
+        local d; d="$(mktemp -d)"
+        printf '%s\n' "$1" > "$d/services.env"
+        ( set -uo pipefail
+          # shellcheck disable=SC2034  # читает вырезанный из установщика страж
+          SERVICES="$d/services.env"
+          err() { printf 'ERR %s\n' "$*"; }
+          eval "$GF"
+          printf 'PASS\n' ) 2>&1
+        rm -rf "$d"
+    }
+
+    FULL="LAYER2=1
+LAYER3=0
+AZ_IFACE=antizapret-awg
+AZ_PORT=41234
+AZ_SUBNET=10.29.9
+VPN_IFACE=vpn-awg
+VPN_PORT=42345
+VPN_SUBNET=10.28.9"
+
+    out="$(guard "$FULL")"
+    case "$out" in
+        *PASS*) ok "полный файл проходит" ;;
+        *) bad "исправный файл отвергнут" "$out" ;;
+    esac
+
+    out="$(guard "LAYER2=1
+LAYER3=0
+AZ_IFACE=antizapret-awg
+AZ_PORT=
+AZ_SUBNET=10.29.9
+VPN_IFACE=vpn-awg
+VPN_PORT=42345
+VPN_SUBNET=10.28.9")"
+    case "$out" in
+        *"ERR"*"неполон"*AZ_PORT*) ok "обрезанный отвергнут, и назван ключ" ;;
+        *PASS*) bad "обрезанный файл прошёл насквозь" "дальше подставятся умолчания" ;;
+        *) bad "неожиданный исход" "$out" ;;
+    esac
+
+    # Слой 3.0 выключен — его значений в файле может не быть вовсе.
+    out="$(guard "$FULL")"
+    case "$out" in
+        *PASS*) ok "отсутствие значений выключенного слоя не мешает" ;;
+        *) bad "отказ из-за выключенного слоя" "$out" ;;
+    esac
+fi
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail
