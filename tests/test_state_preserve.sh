@@ -44,6 +44,7 @@ run_cc() {  # run_cc <строки прежнего state или ""> <CLI_PRESET
     local st="$WORK/install-state.env" logf="$WORK/run.log"
     rm -f "$st"
     [ -n "$prev" ] && printf '%s\n' "$prev" > "$st"
+    # shellcheck disable=SC2034  # их читает вырезанная функция через eval
     (
         set -euo pipefail
         STATE="$st"

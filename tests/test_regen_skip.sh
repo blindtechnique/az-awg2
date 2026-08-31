@@ -51,6 +51,7 @@ run() {  # run <слой включён: 1|0> <профиль есть: 1|0> <с
         i=$((i + 1))
     done
     local out
+    # shellcheck disable=SC2034  # их читает вырезанная функция через eval
     out="$(
         set -euo pipefail
         SERVICES="$d/services.env"
