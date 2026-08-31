@@ -239,7 +239,7 @@ head_ "5. Восстановление, убитое между копирова
 # У do_restore здесь два абсолютных пути (/etc/knot-resolver и /etc/openvpn):
 # без root mkdir по ним падает, и стенд мерил бы не прерывание, а отсутствие
 # прав. Переписываем их в вырезанном куске — сам файл не трогаем.
-DR="$(sed -n '/^do_restore()/,/^}$/p' "$BACKUP_SH" \
+DR="$(sed -n '/^_restore_part()/,/^}$/p;/^do_restore()/,/^}$/p' "$BACKUP_SH" \
       | sed "s#/etc/knot-resolver#$WORK/knot#g; s#/etc/openvpn#$WORK/openvpn#g")"
 mkdir -p "$WORK/knot" "$WORK/openvpn"
 if [ -z "$DR" ]; then

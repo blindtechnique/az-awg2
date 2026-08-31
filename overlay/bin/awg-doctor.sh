@@ -416,6 +416,27 @@ check_iface_env() {  # check_iface_env <иф> <подсеть> <порт> <mtu> 
     return 0
 }
 
+# ── план против того, что лежит на диске ────────────────────────────────────
+# LAYER2/LAYER3 читаются с умолчанием, поэтому обрезанный services.env
+# объявляет слой выключенным — и все проверки по нему пропускаются молча, а
+# внизу печатается «проблем не найдено». Сверка чисто файловая: «слой выключен,
+# а его файлы на месте» доказывается двумя файлами и законного прочтения не
+# имеет — либо план неполон, либо слой сняли не до конца.
+check_plan() {  # check_plan <включён ли> <имя интерфейса> <каталог клиентов> <метка>
+    local on="$1" iface="$2" cldir="$3" label="$4" what=""
+    [ "$on" = 1 ] && return 0
+    [ -f "$AWG_DIR/${iface}.conf" ] && what="$what конфиг"
+    [ -f "$AWG_DIR/${iface}.env" ] && what="$what .env"
+    [ -f "$AWG_DIR/${iface}.v3" ] && what="$what .v3"
+    [ -n "$(ls -A "$cldir" 2>/dev/null || true)" ] && what="$what каталог клиентов"
+    [ -n "$what" ] || return 0
+    # Шапка печатается только при находке — как у check_marks. Иначе пустой
+    # раздел висел бы на каждом исправном сервере.
+    [ "${_plan_head:-0}" = 1 ] || { head_ "План против диска"; _plan_head=1; }
+    bad "$label: слой объявлен выключенным, но его файлы на месте —$what" \
+        "по нему не делается НИ ОДНА проверка: либо services.env неполон, либо слой сняли не до конца"
+}
+
 check_peers() {  # check_peers <серверный конфиг> <каталог клиентов> <метка>
     local conf="$1" cldir="$2" label="$3"
     [ -f "$conf" ] || return 0
@@ -459,8 +480,10 @@ check_peers() {  # check_peers <серверный конфиг> <каталог
             esac
         fi
     done
-    [ "$n" = 0 ] && return 0
-
+    # Ноль клиентских файлов — НЕ повод молчать: если в конфиге есть пиры, это
+    # и есть худший случай. Поэтому ранний возврат снят, а отчёты о клиентах
+    # просто пропускаются, когда клиентов нет.
+    if [ "$n" != 0 ]; then
     if [ "$lost" = 0 ]; then
         ok "$label: все $n клиентов есть среди пиров сервера"
     else
@@ -475,13 +498,19 @@ check_peers() {  # check_peers <серверный конфиг> <каталог
         bad "$label: $dup конфигов делят адрес с другим клиентом ($dup_s)" \
             "следующий выданный клиент заберёт маршрут у работающего"
     fi
+    fi
     # Пир без клиентского файла — доступ, который нельзя отозвать по имени.
-    # warn, а не bad: пир мог быть заведён руками, а файл унесён владельцем.
     local p orphan=0
     for p in $peers; do
         case " $matched " in *" $p "*) ;; *) orphan=$((orphan + 1)) ;; esac
     done
-    if [ "$orphan" != 0 ]; then
+    if [ "$orphan" != 0 ] && [ "$n" = 0 ]; then
+        # Пустой каталог при непустом конфиге: у людей на руках рабочие
+        # конфиги, сервер их принимает, а владелец не видит ни одного имени.
+        # «Пир мог быть заведён руками» объясняет одну-две штуки, но не это.
+        bad "$label: в конфиге $orphan пиров, а клиентских файлов нет ни одного" \
+            "доступ у людей на руках, отозвать его по имени нечем — так выглядит восстановление из архива без клиентских ключей"
+    elif [ "$orphan" != 0 ]; then
         warn "$label: $orphan пиров без клиентского файла — доступ есть, отозвать по имени нечем"
     fi
 }
@@ -512,6 +541,10 @@ check_iface() {  # check_iface <имя> <порт> <слой>
     ok "$i: клиентов $peers"
 }
 
+check_plan "$LAYER2" "${AZ_IFACE:-antizapret-awg}" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
+check_plan "$LAYER2" "${VPN_IFACE:-vpn-awg}" "$DEST/clients/vpn" "${VPN_IFACE:-vpn-awg}"
+check_plan "$LAYER3" "${AZ3_IFACE:-antizapret-awg3}" "$DEST/clients/antizapret3" "${AZ3_IFACE:-antizapret-awg3}"
+check_plan "$LAYER3" "${VPN3_IFACE:-vpn-awg3}" "$DEST/clients/vpn3" "${VPN3_IFACE:-vpn-awg3}"
 if [ "$LAYER2" = 1 ]; then
     head_ "Слой AmneziaWG 2.0 (kernel-модуль)"
     if modinfo amneziawg >/dev/null 2>&1; then ok "модуль amneziawg собран"

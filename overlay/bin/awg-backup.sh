@@ -201,6 +201,17 @@ PYBK
     return "$rc"
 }
 
+# Раздел архива бывает пуст законно (нет своих custom*.sh, нет lua-файлов
+# knot) — тогда копировать нечего и молчать правильно. А вот отказ копирования
+# непустого раздела — это половина восстановленного состояния, и раньше он
+# уходил в /dev/null вместе с законным «нечего копировать».
+_restore_part() {  # _restore_part <каталог в архиве> <куда> <что это>
+    [ -d "$1" ] || return 0
+    [ -n "$(ls -A "$1" 2>/dev/null || true)" ] || return 0
+    cp -r "$1/." "$2/" || { err "не восстановлено: $3 ($1 → $2)"; rc=1; }
+    return 0
+}
+
 do_restore() {
     local _orig_arg="${1:-}"
     # зашифрованный архив расшифровываем во временный файл
@@ -279,11 +290,11 @@ do_restore() {
         mv /etc/openvpn/easyrsa3.restore /etc/openvpn/easyrsa3
         rm -rf /etc/openvpn/easyrsa3.old
     fi
-    cp "$stage"/amneziawg/* "$AWG_DIR/" 2>/dev/null || true
-    cp "$stage"/config/* "$AZ/config/" 2>/dev/null || true
-    cp "$stage"/knot/* /etc/knot-resolver/ 2>/dev/null || true
-    cp "$stage"/custom/* "$AZ/" 2>/dev/null || true
-    cp -r "$stage/client/." "$AZ/client/" 2>/dev/null || true
+    _restore_part "$stage/amneziawg" "$AWG_DIR" "серверные конфиги и профили"
+    _restore_part "$stage/config" "$AZ/config" "списки AntiZapret"
+    _restore_part "$stage/knot" /etc/knot-resolver "конфигурация knot-resolver"
+    _restore_part "$stage/custom" "$AZ" "пользовательские custom*.sh"
+    _restore_part "$stage/client" "$AZ/client" "ванильные клиентские профили"
     # Каталог клиентских ключей, stats.db и expiry.tsv. Архивы, снятые до
     # починки DEST, здесь пусты — и это не отказ копирования, а отсутствие
     # данных, о котором обязан узнать тот, кто на этот архив рассчитывает.

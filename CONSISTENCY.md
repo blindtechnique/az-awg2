@@ -62,6 +62,7 @@ NAT для подсетей слоя тоже делает ваниль по а�
 | ключ сервера | серверный конфиг, `PrivateKey` | публичный ключ живого интерфейса | `check_live` | bad |
 | адрес клиента | серверный конфиг, `AllowedIPs` | `Address` в клиентских конфигах | `check_peers` | bad |
 | профиль обфускации 3.0 | `obfuscation3.env:AWG_HPK_HEX` | `<iface>.v3` | `check_v3_stale` | bad |
+| слой включён/выключен | `services.env:LAYER2`, `LAYER3` | серверный конфиг, `<iface>.env`, `<iface>.v3`, каталог клиентов | `check_plan` | bad |
 | незавершённая операция | — | `.restore-in-progress`, `.migrate-in-progress` | `check_marks` | bad |
 
 <!-- CONSISTENCY-TABLE-END -->
