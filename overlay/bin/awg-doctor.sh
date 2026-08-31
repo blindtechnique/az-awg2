@@ -708,7 +708,11 @@ if [ -f /etc/knot-resolver/kresd.conf ]; then
     miss=0
     for s in "${AZ_SUBNET:-}" "${VPN_SUBNET:-}" "${AZ3_SUBNET:-}" "${VPN3_SUBNET:-}"; do
         [ -n "$s" ] || continue
-        grep -q "view:addr('$s.1/24'" /etc/knot-resolver/kresd.conf && continue
+        # Форма СЕТЕВАЯ, как пишет ваниль и как теперь пишет awg-knot-view.sh:
+        # '10.29.9.0/24'. Прежде искалась форма с адресом шлюза ('10.29.9.1/24'),
+        # какой не бывает ни у ванили, ни у нас, — и замечание горело на каждом
+        # исправном сервере, включая только что установленный.
+        grep -q "view:addr('$s.0/24'" /etc/knot-resolver/kresd.conf && continue
         # Свой view нужен только там, где ваниль сама их держит: она описывает
         # view для split-подсетей, а для полного VPN их может не быть вовсе —
         # тогда и нам добавлять некуда, и это не проблема.

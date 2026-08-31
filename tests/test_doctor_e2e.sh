@@ -153,7 +153,8 @@ mk_stand() {
             echo "Endpoint = ${HOST}:${port}"
             echo "AllowedIPs = 0.0.0.0/0"
         } > "$DEST/clients/$dir/${dir}-alice-am.conf"
-        printf 'view:addr(%s%s.1/24%s)\n' "'" "$sub" "'" >> /etc/knot-resolver/kresd.conf
+        # Сетевая форма — ровно как пишет ваниль и как теперь ищет доктор.
+        printf 'view:addr(%s%s.0/24%s)\n' "'" "$sub" "'" >> /etc/knot-resolver/kresd.conf
     done <<EOT
 antizapret-awg 10.29.9 53820 1320 2 antizapret
 vpn-awg 10.28.9 47716 1320 2 vpn

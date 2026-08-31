@@ -115,6 +115,8 @@ run "архив содержит клиентские ключи, а отказ 
     bash tests/test_restore_integrity.sh
 run "доктор целиком: исправный сервер молчит, сломанный говорит" \
     bash tests/test_doctor_e2e.sh
+run "DNS-view пишутся в формате ванили, а отказ слышен" \
+    bash tests/test_knot_view.sh
 
 head_ "Прерывание reconfigure"
 run "сервер на новом профиле, клиенты на старом — и это видно" \
