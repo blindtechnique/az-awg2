@@ -50,7 +50,10 @@ while [ $# -gt 0 ]; do
         --reapply)   REAPPLY=1; APPLY=1; INTERACTIVE=0; shift ;;
         --show)      SHOW=1; INTERACTIVE=0; shift ;;
         --regenerate) REGEN=1; INTERACTIVE=0; shift ;;
-        -h|--help)   grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
+        # Справка — это ШАПКА файла, а не все его комментарии: ниже по файлу
+        # идут заметки для читателя кода, и владелец получал их вместо справки,
+        # начиная с обрубленного шебанга.
+        -h|--help)   awk 'NR==1||/^# *SPDX-/{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; exit 0 ;;
         *) echo "Неизвестный флаг: $1" >&2; exit 2 ;;
     esac
 done

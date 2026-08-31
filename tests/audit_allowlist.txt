@@ -6,11 +6,9 @@
 # Если код изменится, строка перестанет к чему-либо относиться, и аудит
 # сообщит об этом отдельно — чтобы список не гнил.
 install.sh :: pipe-fallible :: "$REPO_DIR/bot/bot.env.template" | grep -v '^#' :: grep -v по нашему же шаблону: в нём есть строки без решётки, иначе бот всё равно не поднялся бы
-install.sh :: pipe-fallible :: -h|--help) grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;; :: grep по собственному файлу: шебанг и шапка есть всегда, совпадение гарантировано
 overlay/bin/awg-doctor.sh :: pipe-fallible :: CONF="$(ls -1 /opt/antizapret-awg/clients/$DOC_SVC/*"$TMPNAME"*-am.conf 2>/dev/null | head -1)" :: файл идёт без set -e: отказ конвейера оставляет пустое значение, и диагностика продолжается — это её штатное поведение
 overlay/bin/awg-doctor.sh :: pipe-fallible :: hs="$(ip netns exec "$NS" awg show "$TMPNAME" latest-handshakes 2>/dev/null | awk '{print $2}')" :: файл идёт без set -e: отказ конвейера оставляет пустое значение, и диагностика продолжается — это её штатное поведение
 overlay/bin/awg-doctor.sh :: pipe-predicate :: if ss -lunH 2>/dev/null | awk '{print $(NF-1)}' | grep -qE ":$p\$"; then ok "порт $p слушается" :: producer это ss по одному протоколу: десятки строк, в буфер трубы влезает целиком, SIGPIPE не наступает
-overlay/bin/awg-obfuscation.sh :: pipe-fallible :: -h|--help) grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;; :: grep по собственному файлу: шебанг и шапка есть всегда, совпадение гарантировано
 overlay/bin/awg-reintegrate.sh :: pipe-fallible :: iptables -w -t nat -S PREROUTING 2>/dev/null | grep -E 'dport (52443|52080) .*REDIRECT' \ :: файл идёт без set -e: восстановление после обновления ванили не должно падать из-за отсутствующего правила
 overlay/bin/awg-reintegrate.sh :: pipe-predicate :: if ! ip -d link show "$i" 2>/dev/null | grep -q amneziawg; then :: producer это ip link по одному интерфейсу: несколько строк, до переполнения буфера трубы далеко
 overlay/bin/awg-upstream-check.sh :: pipe-fallible :: new="$(git ls-remote "https://github.com/blindtechnique/az-awg2.git" "refs/heads/$branch" 2>/dev/null | cut -c1-12)" :: файл идёт без set -e: проверка обновлений при отказе сети просто ничего не показывает

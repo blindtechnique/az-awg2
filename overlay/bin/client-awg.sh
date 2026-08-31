@@ -526,5 +526,8 @@ case "${1:-}" in
     list)  list_clients "${2:-antizapret}" ;;
     regen-all) regen_all ;;
     expire-check) expire_check ;;
-    *) grep '^#' "$0" | sed 's/^# \?//'; exit 0 ;;
+    # Справка — это ШАПКА файла, а не все его комментарии: ниже по файлу
+    # идут заметки для читателя кода, и владелец получал их вместо справки,
+    # начиная с обрубленного шебанга.
+    *) awk 'NR==1||/^# *SPDX-/{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; exit 0 ;;
 esac

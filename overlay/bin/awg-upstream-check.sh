@@ -19,7 +19,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --json) JSON=1; shift ;;
         --quiet) QUIET=1; shift ;;
-        -h|--help) sed -n '3,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        # Справка — это шапка файла, а не диапазон строк: жёсткие номера не
+        # знают, где она кончилась, и ошибаются молча в обе стороны.
+        -h|--help) awk 'NR==1||/^# *SPDX-/{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; exit 0 ;;
         *) echo "Неизвестный флаг: $1" >&2; exit 2 ;;
     esac
 done

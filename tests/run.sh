@@ -84,6 +84,8 @@ run "regen-all: пропущенный слой слышен и виден по 
     bash tests/test_regen_skip.sh
 run "приватные ключи клиентов закрыты, и старые конфиги чинятся" \
     bash tests/test_secret_perms.sh
+run "--help печатает справку, а не все комментарии файла" \
+    bash tests/test_help.sh
 
 head_ "Диагностика"
 run "слой 3.0: оба интерфейса и разные причины отказа" \
