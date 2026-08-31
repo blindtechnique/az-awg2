@@ -359,6 +359,20 @@ collect_choices() {
     if [ -n "$CLI_PRESET" ]; then
         PRESET="$CLI_PRESET"; TEMPLATE="$CLI_TEMPLATE"; FP="${CLI_FP:-chrome}"
         PRESET3="$CLI_PRESET3"; TEMPLATE3="$CLI_TEMPLATE3"
+        # Не спрашивали — не меняем. Диалоги MTU и домена мимикрии лежат в
+        # ветке else, которую эта ветка пропускает, поэтому раньше в state
+        # уезжали ЛОКАЛЬНЫЕ умолчания MTU=1320 и HOST='' — поверх ответов
+        # владельца. На сервере с MTU 1280 одна команда `--preset paranoid`
+        # молча возвращала 1320, и взять своё значение было больше неоткуда.
+        # Флагов --mtu и --host у install.sh нет: сюда они приходят только из
+        # state, поэтому исключений у правила нет.
+        if [ -f "$STATE" ]; then
+            local _keep_mtu _keep_host
+            _keep_mtu="$(. "$STATE" 2>/dev/null; printf '%s' "${AWG_MTU:-}")"
+            _keep_host="$(. "$STATE" 2>/dev/null; printf '%s' "${AWG_HOST:-}")"
+            MTU="${_keep_mtu:-$MTU}"   # пусто в state — остаёмся на умолчании
+            HOST="${_keep_host:-$HOST}"
+        fi
     else
         echo "═══════════════════════════════════════════════════════════════"
         echo "  Обфускация AmneziaWG 2.0 — интенсивность"

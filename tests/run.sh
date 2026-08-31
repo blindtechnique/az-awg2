@@ -78,6 +78,10 @@ run "приоритет явных флагов над сохранённым п
     bash tests/test_obf_preset.sh overlay/bin/awg-obfuscation.sh
 run "перезапуск после --apply и код возврата" \
     bash tests/test_obf_restart.sh overlay/bin/awg-obfuscation.sh
+run "--preset не затирает ответы, которых не спрашивал" \
+    bash tests/test_state_preserve.sh
+run "regen-all: пропущенный слой слышен и виден по коду" \
+    bash tests/test_regen_skip.sh
 
 head_ "Диагностика"
 run "слой 3.0: оба интерфейса и разные причины отказа" \

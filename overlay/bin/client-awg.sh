@@ -355,7 +355,7 @@ list_clients() {
 
 # ── пересоздать конфиги всех клиентов (после смены обфускации) ────────────────
 regen_all() {
-    local svc conf name before after
+    local svc conf name before after prof n_left missed=0
     # сколько конфигов реально изменилось: см. итог в конце функции
     local same=0 changed=0 changed_list=""
     # shellcheck disable=SC1090
@@ -367,11 +367,26 @@ regen_all() {
     for svc in antizapret vpn antizapret3 vpn3; do
         case "$svc" in
             *3) [ "${LAYER3:-0}" = 1 ] || continue
-                [ -f "${AWG_DIR}/obfuscation3.env" ] || continue ;;
+                prof="${AWG_DIR}/obfuscation3.env" ;;
             *)  [ "${LAYER2:-1}" = 1 ] || continue
-                [ -f "${AWG_DIR}/obfuscation.env" ] || continue ;;
+                prof="${AWG_DIR}/obfuscation.env" ;;
         esac
         [ -d "${CLIENT_DIR}/${svc}" ] || continue
+        # Пропуск слоя без профиля остаётся — иначе die() внутри
+        # load_obfuscation уронил бы пересборку у всех остальных слоёв. Но
+        # молчать о нём нельзя: слой включён, клиенты у него есть, а профиля
+        # нет — значит сервер уже на новом профиле, а эти конфиги остались на
+        # старом, и соединяться их владельцы перестанут. Итог внизу при этом
+        # честно печатал «переимпорт не нужен».
+        if [ ! -f "$prof" ]; then
+            n_left="$(find "${CLIENT_DIR}/${svc}" -name '*-am.conf' 2>/dev/null | wc -l || true)"
+            if [ "$n_left" = 0 ]; then continue; fi
+            err "сервис $svc ПРОПУЩЕН: нет профиля $prof"
+            err "   $n_left конфигов остались на прежнем профиле — эти клиенты не соединятся"
+            err "   выпусти профиль (awg-obfuscation [--v3] --regenerate --apply) и повтори regen-all"
+            missed=$((missed + 1))
+            continue
+        fi
         resolve_service "$svc"
         load_obfuscation
         for conf in "${CLIENT_DIR}/${svc}"/*-am.conf; do
@@ -422,12 +437,22 @@ PY
     done
     # Итог важнее перечисления: после обновления слоя нужно знать не «что-то
     # происходило», а придётся ли людям заново импортировать конфиги.
-    if [ "$changed" = 0 ]; then
-        log "Конфиги клиентов: $same без изменений — переимпорт не нужен"
-    else
+    if [ "$changed" != 0 ]; then
         log "Конфиги клиентов: $same без изменений, $changed изменено"
         log "   Заново скачать конфиг нужно:$changed_list"
+    elif [ "$missed" = 0 ]; then
+        log "Конфиги клиентов: $same без изменений — переимпорт не нужен"
+    else
+        log "Конфиги клиентов: $same без изменений"
     fi
+    # Ненулевой код: часть клиентов осталась на прежнем профиле. Обе вызывающих
+    # стороны это уже разбирают — install.sh печатает «повтори вручную», бот
+    # отвечает отказом, — и до сих пор обеим сообщалось об успехе.
+    if [ "$missed" != 0 ]; then
+        err "Сервисов пропущено: $missed — конфиги их клиентов НЕ пересобраны"
+        return 1
+    fi
+    return 0
 }
 
 # ── проверка и удаление просроченных временных клиентов ──────────────────────
