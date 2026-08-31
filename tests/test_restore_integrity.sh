@@ -442,6 +442,19 @@ case "$help_txt" in
            "$(printf '%s\n' "$help_txt" | grep -i 'default' || echo 'строки про default нет')" ;;
 esac
 
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "12. Архив создаётся закрытым даже при разрешающем umask"
+# Настоящий прогон, а не грep: umask 022 — обычное значение для root-сессии.
+rm -f /root/awg-backup-*.tar.gz 2>/dev/null
+perm_out="$( umask 022; bash "$BK" backup 2>/dev/null | tail -1 )"
+if [ -f "$perm_out" ]; then
+    m="$(stat -c '%a' "$perm_out" 2>/dev/null || echo '?')"
+    [ "$m" = 600 ] && ok "архив 600 при umask 022" \
+        || bad "архив с правами $m" "внутри приватные ключи сервера и всех клиентов"
+else
+    bad "архив не создан" "$perm_out"
+fi
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail

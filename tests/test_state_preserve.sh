@@ -59,6 +59,9 @@ T3_CLI=""
 # сохранённое значение, либо диалог; VER_ANSWER — что владелец ответит в нём.
 VER_CLI=both
 VER_ANSWER=""
+# Порты из командной строки. Заглушка parse_cli_ports объявляет себя вслух и
+# выставляет выбор — так видно, дошло ли дело до разбора вообще.
+PORTS_CLI=""
 run_cc() {  # run_cc <строки прежнего state или ""> <CLI_PRESET> <RECONFIGURE> [ответы диалога]
     local prev="$1" preset="$2" rec="$3" answers="${4:-}"
     local st="$WORK/install-state.env" logf="$WORK/run.log"
@@ -70,12 +73,14 @@ run_cc() {  # run_cc <строки прежнего state или ""> <CLI_PRESET
         STATE="$st"
         RECONFIGURE="$rec"
         NO_BOT=1                       # бот в этом тесте не участвует
-        CLI_PORTS="" CLI_PORTS3=""
+        CLI_PORTS="$PORTS_CLI" CLI_PORTS3=""
         CLI_PRESET="$preset" CLI_TEMPLATE="$T_CLI" CLI_FP="$F_CLI"
         CLI_PRESET3="$P3_CLI" CLI_TEMPLATE3="$T3_CLI" CLI_AWG_VER="$VER_CLI"
-        log() { :; }
-        parse_cli_ports()  { :; }
-        parse_cli_ports3() { :; }
+        log() { printf 'LOG %s
+' "$*"; }
+        parse_cli_ports()  { AZ_PORT_CHOICE=30000; VPN_PORT_CHOICE=30001
+                             printf 'РАЗОБРАЛИ порты\n'; }
+        parse_cli_ports3() { printf 'РАЗОБРАЛИ порты3\n'; }
         # Заглушка выбора версии сообщает, ЧТО ей предложили умолчанием:
         # именно оно и было опасным — «обе сразу» на 2.0-сервере.
         ask_pick()  { printf 'СПРОСИЛИ версию, умолчание=%s\n' "$2"
@@ -86,6 +91,7 @@ run_cc() {  # run_cc <строки прежнего state или ""> <CLI_PRESET
         has_tty()   { return 1; }
         eval "$CC"
         collect_choices
+        printf 'ПОРТ_ВЫБОР=%s\n' "${AZ_PORT_CHOICE:-}"
     ) <<< "$answers" > "$logf" 2>&1 || {
         printf 'ПАДЕНИЕ\n'
         sed 's/^/       /' "$logf" >&2
@@ -249,6 +255,49 @@ case "$(cat "$WORK/run.log")" in
     *) bad "умолчание на чистой установке изменилось" "$(grep СПРОСИЛИ "$WORK/run.log" || echo 'вопроса не было')" ;;
 esac
 want "$S8" AWG_VER both "новый сервер должен получать оба слоя по умолчанию"
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "11. --awg-ports не перебивает закреплённый порт молча"
+# Разбор флага стоял ВЫШЕ раннего возврата, а AZ_PORT_CHOICE объявлена без
+# local: значение переживало return и уезжало вниз как --az-port, перебивая
+# закрепление вопреки комментарию рядом. Сервер начинал слушать другой порт, а
+# Endpoint у ВСЕХ выданных конфигов оставался прежним — regen-all его не правит,
+# лечится только перевыпуском. Вдобавок --plan выходит до collect_choices и
+# печатал СТАРЫЕ порты: сухой прогон и настоящий расходились.
+T_CLI="" F_CLI="" P3_CLI="" T3_CLI="" VER_CLI=both VER_ANSWER=""
+PORTS_CLI="30000,30001"
+S9="$(run_cc "$PREV" "" 0)"
+LOG="$(cat "$WORK/run.log")"
+case "$LOG" in
+    *"РАЗОБРАЛИ порты"*) bad "флаг разобран на установленном сервере" \
+        "порт переедет, а Endpoint у выданных конфигов останется старым" ;;
+    *) ok "флаг не применён" ;;
+esac
+case "$LOG" in
+    *"ПОРТ_ВЫБОР="[0-9]*) bad "выбор порта уехал вниз" "$(printf '%s' "$LOG" | grep ПОРТ_ВЫБОР)" ;;
+    *) ok "и вниз ничего не уехало" ;;
+esac
+case "$LOG" in
+    *"не применены"*) ok "и сказано вслух, а не проигнорировано молча" ;;
+    *) bad "флаг проигнорирован молча" "владелец решит, что порт сменился" ;;
+esac
+[ -n "$S9" ] && ok "прогон при этом не упал" || bad "collect_choices упала" "$LOG"
+
+# Обратная сторона: с --reconfigure смена порта — осознанное действие, и она
+# обязана работать. Иначе починка превратилась бы в «порт сменить нельзя».
+T_CLI="" F_CLI="" P3_CLI="" T3_CLI="" VER_CLI=both VER_ANSWER=""
+PORTS_CLI="30000,30001"
+run_cc "$PREV" "" 1 "5
+3
+0
+1
+3
+1" >/dev/null
+case "$(cat "$WORK/run.log")" in
+    *"РАЗОБРАЛИ порты"*) ok "с --reconfigure флаг применяется" ;;
+    *) bad "--reconfigure --awg-ports не работает" "сменить порт стало нечем" ;;
+esac
+PORTS_CLI=""
 
 # ═══════════════════════════════════════════════════════════════════════════
 head_ "7. Правило записано в коде, а не подобрано под тест"

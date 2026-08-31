@@ -684,6 +684,46 @@ else
     fi
 fi
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+head_ "17. Удаление ПОСЛЕДНЕГО клиента вычищает и его срок"
+# `grep -v` отдаёт 1, когда не напечатал ни одной строки, — а это ровно случай
+# удаления последней записи файла. С `&& mv` подстановка не доезжала: строка
+# срока оставалась жить, рядом копился мусорный .tmp, и awg-expire потом бил по
+# клиенту, которого уже нет.
+EXPBLK="$(sed -n '/^        if \[ -f "\$EXPIRY_FILE" \]; then$/,/^        fi ;;$/p' overlay/bin/client-awg.sh)"
+if [ -z "$EXPBLK" ]; then
+    bad "не нашли вычистку срока в client-awg.sh" "мерить нечего"
+else
+    expdel() {  # expdel <строки файла> <кого удаляем> → что осталось
+        local f="$WORK/expiry.tsv"
+        printf '%b' "$1" > "$f"
+        ( set -uo pipefail
+          export EXPIRY_FILE="$f"
+          err() { printf 'ERR %s\n' "$*"; }
+          set -- del "$2" antizapret
+          eval "${EXPBLK% ;;}" ) >/dev/null 2>&1
+        cat "$f" 2>/dev/null
+        [ -e "$f.tmp" ] && printf 'ОСТАЛСЯ-TMP\n'
+        return 0
+    }
+
+    out="$(expdel "alice\tantizapret\t2030-01-01\n" alice)"
+    case "$out" in
+        *alice*) bad "срок последнего клиента остался" "awg-expire ударит по несуществующему клиенту" ;;
+        *ОСТАЛСЯ-TMP*) bad "рядом остался мусорный .tmp" "$out" ;;
+        *) ok "последний срок вычищен, мусора не осталось" ;;
+    esac
+
+    out="$(expdel "alice\tantizapret\t2030-01-01\nbob\tantizapret\t2031-01-01\n" alice)"
+    case "$out" in
+        *alice*) bad "срок удалённого клиента остался" "$out" ;;
+        *bob*)   ok "и чужой срок при этом на месте" ;;
+        *)       bad "вычищены оба срока" "удаление одного клиента стёрло сроки всем: «$out»" ;;
+    esac
+fi
+
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail

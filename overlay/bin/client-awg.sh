@@ -521,8 +521,21 @@ case "${1:-}" in
         [ $# -ge 2 ] || die "Укажи имя: del <name> [antizapret|vpn|antizapret3|vpn3]"
         del_client "$2" "${3:-antizapret}"
         # вычистить из expiry
-        [ -f "$EXPIRY_FILE" ] && grep -vP "^$2\t${3:-antizapret}\t" "$EXPIRY_FILE" > "${EXPIRY_FILE}.tmp" 2>/dev/null \
-            && mv "${EXPIRY_FILE}.tmp" "$EXPIRY_FILE" || true ;;
+        # grep -v отдаёт 1, когда не напечатал НИ ОДНОЙ строки, — а это ровно
+        # случай удаления последней записи файла. С `&& mv` подстановка не
+        # доезжала, строка срока оставалась жить, рядом копился мусорный .tmp,
+        # и awg-expire потом бил по клиенту, которого уже нет. Код 1 здесь не
+        # признак беды и на подстановку влиять не должен; код >=1 — уже ошибка
+        # самого grep, и тогда трогать файл нельзя, иначе один сбой чтения
+        # стёр бы сроки всем.
+        if [ -f "$EXPIRY_FILE" ]; then
+            grep -vP "^$2\t${3:-antizapret}\t" "$EXPIRY_FILE" > "${EXPIRY_FILE}.tmp" 2>/dev/null
+            case "$?" in
+                0|1) mv "${EXPIRY_FILE}.tmp" "$EXPIRY_FILE" 2>/dev/null || rm -f "${EXPIRY_FILE}.tmp" ;;
+                *)   rm -f "${EXPIRY_FILE}.tmp"
+                     err "срок клиента $2 не вычищен из $EXPIRY_FILE" ;;
+            esac
+        fi ;;
     list)  list_clients "${2:-antizapret}" ;;
     regen-all) regen_all ;;
     expire-check) expire_check ;;

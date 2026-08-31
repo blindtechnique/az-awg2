@@ -281,7 +281,23 @@ check_v3_stale() {  # check_v3_stale <путь .v3> <объявлена ли в 
     local v3f="$1" want="$2" preset="$3"
     [ -f "$v3f" ] || return 0
     grep -q '^header_protection_key=' "$v3f" 2>/dev/null || return 0
-    [ "$want" = 1 ] && return 0
+    if [ "$want" = 1 ]; then
+        # Раньше здесь стоял безусловный возврат: наличие ключа считалось
+        # доказательством. Но CONSISTENCY.md обещает сверку ЗНАЧЕНИЙ, и цена
+        # расхождения высшая: сервер и выданные конфиги шифруют заголовки
+        # РАЗНЫМИ ключами, поэтому не проходит ни один хендшейк — слой 3.0
+        # отказывает целиком. Доктор при этом печатал «header protection
+        # применена», то есть самый разрушительный исход был зелёным.
+        local want_hpk got_hpk
+        # shellcheck disable=SC1090
+        want_hpk="$( . "$AWG_DIR/obfuscation3.env" 2>/dev/null || true; printf '%s' "${AWG_HPK_HEX:-}" )"
+        got_hpk="$(sed -n 's/^header_protection_key=//p' "$v3f" 2>/dev/null | head -1)"
+        if [ -n "$want_hpk" ] && [ -n "$got_hpk" ] && [ "$want_hpk" != "$got_hpk" ]; then
+            bad "$v3f: ключ header protection не тот, что в профиле" \
+                "сервер и клиенты шифруют заголовки разными ключами — не подключится никто; awg-obfuscation --v3 --apply"
+        fi
+        return 0
+    fi
     bad "$v3f содержит header_protection_key, а профиль $preset его не объявляет" \
         "файл остался от прежнего профиля — примени текущий заново: awg-obfuscation --v3 --apply"
 }

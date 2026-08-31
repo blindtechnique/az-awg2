@@ -428,8 +428,21 @@ plan_services() {
         pinned_az="$(. "$SERVICES" 2>/dev/null; echo "${AZ_PORT:-}")"
         pinned_vpn="$(. "$SERVICES" 2>/dev/null; echo "${VPN_PORT:-}")"
         # порты старых режимов не наследуем: 51xxx/52xxx заняты ванилью
-        case "$pinned_az"  in 51443|52443) pinned_az="";;  esac
-        case "$pinned_vpn" in 51080|52080) pinned_vpn="";; esac
+        # Молчать здесь нельзя: если владелец в своё время сам согласился на
+        # зарезервированный порт (ask_port спрашивает и принимает «да»), то
+        # каждый обычный прогон разыгрывал ему новый — а Endpoint у выданных
+        # конфигов оставался старым. Новое значение тут же закрепляется в
+        # services.env, поэтому сказать надо ровно один раз, но сказать.
+        case "$pinned_az"  in 51443|52443)
+            err "порт $pinned_az занят ванилью — беру новый"
+            err "   конфиги antizapret придётся раздать заново: Endpoint в них старый"
+            pinned_az="" ;;
+        esac
+        case "$pinned_vpn" in 51080|52080)
+            err "порт $pinned_vpn занят ванилью — беру новый"
+            err "   конфиги vpn придётся раздать заново: Endpoint в них старый"
+            pinned_vpn="" ;;
+        esac
     fi
     if [ -n "$CLI_AZ_PORT" ]; then
         valid_port "$CLI_AZ_PORT" || { err "--az-port: некорректный порт"; exit 2; }
@@ -772,6 +785,10 @@ do_migrate() {
         old_vpn_iface="${MARK_VPN_IFACE:-$old_vpn_iface}"
     fi
     local old_az_sub="$AZ_SUBNET" old_vpn_sub="$VPN_SUBNET"
+    if [ "$resumed" = 1 ]; then
+        old_az_sub="${MARK_AZ_SUBNET:-$old_az_sub}"
+        old_vpn_sub="${MARK_VPN_SUBNET:-$old_vpn_sub}"
+    fi
     log "Миграция $old_mode → parallel…"
 
     # Метку кладём ДО первой необратимой записи, иначе смысла в ней нет.
@@ -780,10 +797,17 @@ do_migrate() {
     # services.env после первой же записи.
     {
         printf 'MARK_MODE=%s\n' "$old_mode"
-        printf 'MARK_AZ_IFACE=%s\n' "$AZ_IFACE"
-        printf 'MARK_VPN_IFACE=%s\n' "$VPN_IFACE"
-        printf 'MARK_AZ_SUBNET=%s\n' "$AZ_SUBNET"
-        printf 'MARK_VPN_SUBNET=%s\n' "$VPN_SUBNET"
+        # Именно old_*, а не текущие значения. На ПОВТОРЕ services.env уже
+        # перезаписан, и $AZ_IFACE там — новое имя: метка переписывалась
+        # мигрированными именами, и второе прерывание стирало единственный
+        # след незавершённости. Дальше сервер оставался наполовину
+        # мигрированным и объявленным здоровым, а штатный путь починки
+        # закрывался навсегда. old_* восстановлены из метки выше — там же,
+        # где это уже делается для режима.
+        printf 'MARK_AZ_IFACE=%s\n' "$old_az_iface"
+        printf 'MARK_VPN_IFACE=%s\n' "$old_vpn_iface"
+        printf 'MARK_AZ_SUBNET=%s\n' "$old_az_sub"
+        printf 'MARK_VPN_SUBNET=%s\n' "$old_vpn_sub"
     } > "$MIGRATE_MARK"
 
     # новый план (интерфейсы/подсети/рандомные порты); закреплённые 51xxx/52xxx

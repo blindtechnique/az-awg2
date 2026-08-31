@@ -333,15 +333,27 @@ state_val() {  # state_val <имя ключа> → значение или пу�
 
 collect_choices() {
     AZ_PORT_CHOICE=""; VPN_PORT_CHOICE=""
-    [ -n "$CLI_PORTS" ] && parse_cli_ports
-    [ -n "$CLI_PORTS3" ] && parse_cli_ports3
     if [ -f "$STATE" ] && [ "$RECONFIGURE" != 1 ] && [ -z "$CLI_PRESET" ]; then
         . "$STATE"
         # порты при повторном запуске всегда берутся из services.env (закреплены) —
-        # ответы из state здесь не применяем, чтобы не «переехать» случайно
+        # ответы из state здесь не применяем, чтобы не «переехать» случайно.
+        #
+        # Разбор --awg-ports стоял ВЫШЕ этой ветки, а AZ_PORT_CHOICE объявлена
+        # без local: значение переживало return и уезжало вниз как --az-port,
+        # перебивая закрепление вопреки этому же комментарию. Сервер начинал
+        # слушать другой порт, а Endpoint у ВСЕХ выданных конфигов оставался
+        # прежним — regen-all его не правит. Вдобавок --plan выходит до этой
+        # функции и печатал СТАРЫЕ порты: сухой прогон и настоящий расходились.
+        if [ -n "$CLI_PORTS" ] || [ -n "$CLI_PORTS3" ]; then
+            log "--awg-ports/--awg3-ports не применены: порты закреплены в services.env."
+            log "   Сменить порт: bash install.sh --reconfigure --awg-ports …"
+            log "   После смены конфиги придётся раздать заново — Endpoint в них старый."
+        fi
         log "Использую сохранённые ответы (обфускация ${AWG_PRESET:-medium}/${AWG_TEMPLATE:-default}, бот $([ "${AWG_BOT_INSTALL:-0}" = 1 ] && echo да || echo нет)). Сброс: --reconfigure"
         return
     fi
+    [ -n "$CLI_PORTS" ] && parse_cli_ports
+    [ -n "$CLI_PORTS3" ] && parse_cli_ports3
     local PRESET="medium" TEMPLATE="" FP="chrome" MTU=1320 HOST="" BOT_INSTALL=0 BOT_TOKEN="" BOT_ADMINS=""
     local PRESET3="" TEMPLATE3=""      # пусто = как у слоя 2.0
     local AWG_VER="${CLI_AWG_VER:-}"
