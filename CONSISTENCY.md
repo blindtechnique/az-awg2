@@ -26,6 +26,10 @@ NAT для подсетей слоя тоже делает ваниль по а�
 `<iface>.env` стоит `NAT=0`, и расхождение подсети там сейчас инертно — но
 копия всё равно устаревает, и об этом говорится.
 
+> `<iface>.env` существует только у слоя 3.0: его читает userspace-датапас.
+> Слой 2.0 идёт на kernel-модуле под `awg-quick@` и берёт всё из `.conf`,
+> поэтому спрашивать с него этот файл не за что.
+
 ## Как выбирается уровень
 
 Не по тяжести последствия, а по **доказуемости** — иначе диагностика начинает
@@ -53,9 +57,9 @@ NAT для подсетей слоя тоже делает ваниль по а�
 | порт | `services.env:AZ_PORT`, `VPN_PORT`, `AZ3_PORT`, `VPN3_PORT` | `ListenPort` серверного конфига | `check_ports` | bad |
 | порт | `services.env:AZ_PORT`, `VPN_PORT`, `AZ3_PORT`, `VPN3_PORT` | порт в `Endpoint` клиентов | `check_ports` | bad |
 | порт (годность) | — | порт вне 1..65535 в `Endpoint` | `check_client_ports` | bad |
-| порт | `services.env:*_PORT` | `PORT` в `<iface>.env` | `check_iface_env` | bad |
+| порт (слой 3.0) | `services.env:AZ3_PORT`, `VPN3_PORT` | `PORT` в `<iface>.env` | `check_iface_env` | bad |
 | MTU | `services.env:MTU`, `MTU3` | `MTU` в клиентских конфигах | `check_client_mtu` | warn |
-| подсеть | `services.env:AZ_SUBNET`, `VPN_SUBNET`, `AZ3_SUBNET`, `VPN3_SUBNET` | `SUBNET` в `<iface>.env` | `check_iface_env` | warn |
+| подсеть (слой 3.0) | `services.env:AZ3_SUBNET`, `VPN3_SUBNET` | `SUBNET` в `<iface>.env` | `check_iface_env` | warn |
 | ключ клиента | клиентский конфиг, `PrivateKey` | `[Peer] PublicKey` в серверном конфиге | `check_peers` | bad |
 | ключ клиента | клиентский конфиг, `PrivateKey` | пиры живого интерфейса | `check_live` | bad |
 | ключ сервера | серверный конфиг, `PrivateKey` | `[Peer] PublicKey` в клиентских конфигах | `check_peers` | bad |

@@ -555,8 +555,11 @@ if [ "$LAYER2" = 1 ]; then
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
     check_live "${AZ_IFACE:-antizapret-awg}" "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf"
     check_live "${VPN_IFACE:-vpn-awg}" "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf"
-    check_iface_env "${AZ_IFACE:-antizapret-awg}" "${AZ_SUBNET:-}" "${AZ_PORT:-}" "" ""
-    check_iface_env "${VPN_IFACE:-vpn-awg}" "${VPN_SUBNET:-}" "${VPN_PORT:-}" "" ""
+    # check_iface_env здесь НЕ зовётся, и это не упущение. <iface>.env читает
+    # userspace-датапас, а у слоя 2.0 его нет: он идёт на kernel-модуле под
+    # awg-quick@, который берёт всё из .conf. Пишет этот файл только
+    # build_iface3, поэтому у интерфейсов 2.0 его не бывает ни на одном
+    # исправном сервере — и проверка, заданная им, жаловалась на всех подряд.
     check_ports "${AZ_IFACE:-antizapret-awg}" "${AZ_PORT:-}" "$DEST/clients/antizapret" AZ_PORT
     check_ports "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-}" "$DEST/clients/vpn" VPN_PORT
     check_client_hosts "$AZ_HOST" "$DEST/clients/antizapret" "${AZ_IFACE:-antizapret-awg}"
