@@ -69,6 +69,7 @@ EOS
 cat > "$S/awg" <<'EOS'
 #!/bin/sh
 if [ "$1" = pubkey ]; then read -r k; printf 'PUB_%s\n' "$k"; exit 0; fi
+if [ "$1" = showconf ]; then cat "$STUB_STATE/$2.conf"; exit $?; fi
 if [ "$1" = show ]; then
     case "$3" in
         peers)      cat "$STUB_STATE/$2.peers" 2>/dev/null; exit 0 ;;
@@ -131,6 +132,7 @@ mk_stand() {
             echo "Address = ${sub}.1/24"
             echo "ListenPort = $port"
             echo "MTU = $mtu"
+            echo "Jc = 4"
         } > "$AWG/$i.conf"
         [ "$layer" = 3 ] && {
             { echo "SUBNET=${sub}.0/24"; echo "PORT=$port"; echo "NAT=0"; echo "DNS=10.29.8.1"; } > "$AWG/$i.env"
@@ -142,6 +144,7 @@ mk_stand() {
             echo "PublicKey = PUB_CLI_${i}"
             echo "AllowedIPs = ${sub}.2/32"
         } >> "$AWG/$i.conf"
+        cp "$AWG/$i.conf" "$STUB_STATE/$i.conf"
         printf 'PUB_CLI_%s\n' "$i" >> "$STUB_STATE/$i.peers"
         {
             echo "[Interface]"
@@ -261,6 +264,24 @@ case "$(texts_of FAIL)" in
     *"не тот, что в профиле"*) ok "расхождение ключа названо поломкой" ;;
     *) bad "разъехавшийся ключ 3.0 пропущен" \
            "слой не работает, а доктор молчит: $(texts_of FAIL)$(texts_of WARN)" ;;
+esac
+
+head_ "8. AWG2: ключи прежние, но профиль в памяти устарел"
+mk_stand
+sed -i '/^Jc = 4$/a S1 = 99' "$STUB_STATE/antizapret-awg.conf"
+run_doctor > "$W/out"
+case "$(texts_of FAIL)" in
+    *"antizapret-awg"*"runtime.S1"*) ok "устаревший живой AWG2-профиль найден" ;;
+    *) bad "живой профиль не проверен" "$(texts_of FAIL)$(texts_of WARN)" ;;
+esac
+
+head_ "9. AWG2: env и серверный файл расходятся при прежних ключах"
+mk_stand
+sed -i '/^Jc = 4$/a H1 = 99-100' "$AWG/vpn-awg.conf"
+run_doctor > "$W/out"
+case "$(texts_of FAIL)" in
+    *"vpn-awg"*"disk.H1"*) ok "расхождение серверного файла и env найдено" ;;
+    *) bad "серверный профиль не проверен" "$(texts_of FAIL)$(texts_of WARN)" ;;
 esac
 
 printf '\n'

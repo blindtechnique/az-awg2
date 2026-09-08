@@ -26,6 +26,18 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Both reference and candidate see the same successful synthetic AWG2 load.
+mkdir -p "$WORK/stub"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/stub/systemctl"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/stub/ip"
+cat > "$WORK/stub/awg" <<'EOS'
+#!/bin/sh
+if [ "$1" = showconf ]; then cat "$AWG_DIR/$2.conf"; exit $?; fi
+exit 0
+EOS
+chmod +x "$WORK/stub/"*
+export PATH="$WORK/stub:$PATH"
+
 # ── стенд: сервер, поставленный из main ─────────────────────────────────────
 mk_stand() {  # mk_stand <каталог>
     local d="$1" s

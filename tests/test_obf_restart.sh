@@ -34,7 +34,7 @@ case "\$1" in
         for n in \$(seq 1 4000); do echo "unit-\$n.service enabled enabled"; done
         [ "$1" = 1 ] && echo "awg3@.service enabled enabled"
         for n in \$(seq 1 4000); do echo "zzz-\$n.service enabled enabled"; done ;;
-  start) [ "${5:-0}" = 1 ] && exit 1 || exit 0 ;;
+  start|restart) [ "${5:-0}" = 1 ] && exit 1 || exit 0 ;;
 esac
 exit 0
 EOS
@@ -58,6 +58,9 @@ EOS
         echo 'set -euo pipefail'
         echo 'log(){ echo "[log] $*"; }'
         echo 'err(){ echo "[err] $*"; }'
+        # This suite isolates restart status; the full verifier is exercised
+        # by test_awg2_profile.py, without a mocked verification function.
+        echo 'verify_v2_runtime(){ return 0; }'
         echo "V3=$3; KMOD3=0"
         # Профиль, с которым применитель сверяет ответ демона. Без него он
         # сверял бы подстроку, то есть «какой-то ключ есть» — а разъехавшийся

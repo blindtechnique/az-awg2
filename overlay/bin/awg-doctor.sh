@@ -350,7 +350,7 @@ check_live() {  # check_live <имя интерфейса> <серверный �
     [ -n "$disk_priv" ] && disk_pub="$(printf '%s' "$disk_priv" | awg pubkey 2>/dev/null || true)"
     if [ -n "$live_pub" ] && [ -n "$disk_pub" ]; then
         if [ "$live_pub" = "$disk_pub" ]; then
-            ok "$i: интерфейс поднят из нынешнего конфига"
+            ok "$i: публичный ключ интерфейса совпадает с конфигом"
         else
             bad "$i: интерфейс работает по ДРУГОМУ ключу, чем в $conf" \
                 "конфиг переписан, а интерфейс не перезапущен — клиенты по нему не сойдутся"
@@ -382,6 +382,25 @@ check_live() {  # check_live <имя интерфейса> <серверный �
     fi
     [ "$n_only_conf" = 0 ] && [ "$n_only_live" = 0 ] && [ -n "$conf_peers$live_peers" ] \
         && ok "$i: пиры в ядре и в конфиге совпадают"
+    return 0
+}
+
+check_awg2_profile() {  # check_awg2_profile <интерфейс> <серверный конфиг>
+    local i="$1" conf="$2" verifier result
+    [ -s "$AWG_DIR/obfuscation.env" ] && [ -s "$conf" ] || return 0
+    command -v awg >/dev/null 2>&1 || return 0
+    ip link show "$i" >/dev/null 2>&1 || return 0
+    verifier="$(dirname "$(readlink -f "$0")")/awg2-verify-profile.py"
+    if [ ! -f "$verifier" ]; then
+        warn "$i: проверочный модуль AWG2 отсутствует" \
+             "обнови код слоя; профиль в памяти не проверен"
+        return 0
+    fi
+    if result="$(python3 "$verifier" "$AWG_DIR/obfuscation.env" "$conf" "$i" 2>&1)"; then
+        ok "$i: профиль AWG2, ключи, пиры и порт совпадают с живым интерфейсом"
+    else
+        bad "$i: AWG2 не прошёл сверку профиля/ключей/пиров/порта" "$result"
+    fi
     return 0
 }
 
@@ -575,6 +594,8 @@ if [ "$LAYER2" = 1 ]; then
     check_iface "${VPN_IFACE:-vpn-awg}" "${VPN_PORT:-0}" 2
     check_live "${AZ_IFACE:-antizapret-awg}" "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf"
     check_live "${VPN_IFACE:-vpn-awg}" "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf"
+    check_awg2_profile "${AZ_IFACE:-antizapret-awg}" "$AWG_DIR/${AZ_IFACE:-antizapret-awg}.conf"
+    check_awg2_profile "${VPN_IFACE:-vpn-awg}" "$AWG_DIR/${VPN_IFACE:-vpn-awg}.conf"
     # check_iface_env здесь НЕ зовётся, и это не упущение. <iface>.env читает
     # userspace-датапас, а у слоя 2.0 его нет: он идёт на kernel-модуле под
     # awg-quick@, который берёт всё из .conf. Пишет этот файл только

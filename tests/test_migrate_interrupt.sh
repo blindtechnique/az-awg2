@@ -65,6 +65,7 @@ cp -a "$W/etc-orig/." /etc/ 2>/dev/null || true
 mkdir -p /etc/amnezia/amneziawg /etc/systemd/system /etc/wireguard          /root/antizapret /opt/antizapret-awg /usr/local/bin
 
 AWG=/etc/amnezia/amneziawg
+export AWG_DIR="$AWG"
 mkdir -p "$AWG" /opt/antizapret-awg/clients/antizapret /opt/antizapret-awg/clients/vpn
 
 # ── состояние ДО миграции: старый режим replace, старые имена интерфейсов ───
@@ -85,8 +86,9 @@ VPN_SPLIT=0
 MTU=1320
 MTU3=1280
 EOS
+printf "AWG_Jc='4'\n" > "$AWG/obfuscation.env"
 for s in antizapret vpn; do
-    printf '[Interface]\nPrivateKey = SRV_%s\nAddress = 10.29.9.1/24\nListenPort = 52443\n' \
+    printf '[Interface]\nPrivateKey = SRV_%s\nAddress = 10.29.9.1/24\nListenPort = 52443\nJc = 4\n' \
         "$s" > "$AWG/$s.conf"
     printf '[Interface]\nPrivateKey = CL\n\n[Peer]\nEndpoint = 1.2.3.4:52443\n' \
         > "/opt/antizapret-awg/clients/$s/$s-c1-am.conf"
@@ -99,6 +101,11 @@ S="$W/stub"; mkdir -p "$S"
 for c in systemctl ip iptables ip6tables awg awg-quick modinfo depmod modprobe sysctl; do
     printf '#!/bin/sh\nexit 0\n' > "$S/$c"
 done
+cat > "$S/awg" <<'EOS'
+#!/bin/sh
+if [ "$1" = showconf ]; then cat "$AWG_DIR/$2.conf"; exit $?; fi
+exit 0
+EOS
 # Порт предсказуемый, но КАЖДЫЙ РАЗ другой: pick_random_port зовут дважды, и
 # второй вызов получает первый порт в списке исключений — с постоянным
 # значением он крутил бы все 200 попыток и отказал.

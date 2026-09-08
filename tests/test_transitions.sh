@@ -20,6 +20,23 @@ cd "$ROOT" || exit 1
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Model a successful AWG2 service load. Runtime failures and divergence have
+# separate coverage in test_awg2_profile.py; never invoke host services here.
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/systemctl" <<'EOS'
+#!/bin/sh
+[ "$*" = "cat awg3@.service" ] && exit 1
+exit 0
+EOS
+printf '#!/bin/sh\nexit 1\n' > "$WORK/stub/ip"
+cat > "$WORK/stub/awg" <<'EOS'
+#!/bin/sh
+if [ "$1" = showconf ]; then cat "$AWG_DIR/$2.conf"; exit $?; fi
+exit 0
+EOS
+chmod +x "$WORK/stub/"*
+export PATH="$WORK/stub:$PATH"
+
 ok()  { printf '  ✔ %s\n' "$1"; }
 bad() { printf '  ✘ %s\n' "$1"; [ $# -gt 1 ] && printf '     %s\n' "$2"; fail=1; }
 chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "ждали [$3], вышло [$2]"; fi; }

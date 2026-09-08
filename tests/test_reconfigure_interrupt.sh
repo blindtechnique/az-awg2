@@ -67,6 +67,7 @@ mkdir -p /etc/amnezia/amneziawg /etc/systemd/system /etc/wireguard \
          /root/antizapret /opt/antizapret-awg /usr/local/bin
 
 AWG=/etc/amnezia/amneziawg
+export AWG_DIR="$AWG"
 CL=/opt/antizapret-awg/clients
 mkdir -p "$CL/antizapret" "$CL/vpn"
 
@@ -106,6 +107,11 @@ S="$W/stub"; mkdir -p "$S"
 for c in systemctl ip iptables ip6tables awg awg-quick modinfo depmod modprobe sysctl kresd; do
     printf '#!/bin/sh\nexit 0\n' > "$S/$c"
 done
+cat > "$S/awg" <<'EOS'
+#!/bin/sh
+if [ "$1" = showconf ]; then cat "$AWG_DIR/$2.conf"; exit $?; fi
+exit 0
+EOS
 printf '#!/bin/sh\nexit 0\n' > "$S/ss"
 {
     echo '#!/bin/bash'

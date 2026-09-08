@@ -71,6 +71,68 @@ fi
 log() { printf '\033[1;36m[awg-obf]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[awg-obf]\033[0m %s\n' "$*" >&2; }
 
+# services.env is data here: direct CLI/panel calls must resolve the same
+# AWG2 targets as the installer without executing shell from that file.
+SERVICES_ENV="${AWG_SERVICES_ENV:-${AWG_DIR}/services.env}"
+service_value() {
+    local wanted="$1" key value
+    [ -f "$SERVICES_ENV" ] || return 0
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        key="${key//[[:space:]]/}"
+        [ "$key" = "$wanted" ] || continue
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value#\"}"; value="${value%\"}"
+        value="${value#\'}"; value="${value%\'}"
+        printf '%s' "$value"
+        return 0
+    done < "$SERVICES_ENV"
+}
+if [ "$V3" = 0 ]; then
+    integration_mode="$(service_value MODE)"
+    default_az=antizapret; default_vpn=vpn
+    if [ "$integration_mode" = parallel ]; then
+        default_az=antizapret-awg; default_vpn=vpn-awg
+    fi
+    configured_az="$(service_value AZ_IFACE)"
+    configured_vpn="$(service_value VPN_IFACE)"
+    SERVER_ANTIZAPRET="${AWG_AZ_CONF:-${AWG_DIR}/${configured_az:-$default_az}.conf}"
+    SERVER_VPN="${AWG_VPN_CONF:-${AWG_DIR}/${configured_vpn:-$default_vpn}.conf}"
+fi
+
+validate_v2_targets() {
+    local conf iface first="" root
+    root="$(readlink -m "$AWG_DIR")"
+    if [ "$(service_value LAYER2)" = 0 ]; then
+        err "AWG2 is disabled in services.env; refusing to change its profile"; return 1
+    fi
+    for conf in "$SERVER_ANTIZAPRET" "$SERVER_VPN"; do
+        iface="$(basename "$conf" .conf)"
+        if [[ "$conf" != *.conf || -L "$conf" || ! "$iface" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.+-]{0,14}$ ]] \
+            || [ "$(dirname "$(readlink -m "$conf")")" != "$root" ]; then
+            err "Invalid AWG2 config target: $conf"; return 1
+        fi
+        if [ "$integration_mode" = parallel ] && { [ "$iface" = antizapret ] || [ "$iface" = vpn ]; }; then
+            err "Refusing to touch a vanilla interface in parallel mode: $iface"; return 1
+        fi
+        if [ "$iface" = "$(service_value AZ3_IFACE)" ] \
+            || [ "$iface" = "$(service_value VPN3_IFACE)" ] \
+            || [ "$iface" = antizapret-awg3 ] || [ "$iface" = vpn-awg3 ]; then
+            err "Refusing to apply AWG2 to an AWG3 interface: $iface"; return 1
+        fi
+        if [ "$iface" = "$first" ] || [ ! -s "$conf" ]; then
+            err "Missing or duplicate AWG2 config target: $conf"; return 1
+        fi
+        first="$iface"
+    done
+}
+
+verify_v2_runtime() {
+    local iface="$1" verifier
+    verifier="$(dirname "$(readlink -f "$0")")/awg2-verify-profile.py"
+    python3 "$verifier" "$STATE_ENV" "${AWG_DIR}/${iface}.conf" "$iface"
+}
+
 # ── показать текущий профиль ─────────────────────────────────────────────────
 show_current() {
     if [ -f "$STATE_META" ]; then
@@ -159,6 +221,13 @@ if [ "$INTERACTIVE" = 1 ]; then
     echo
     read -rp "Применить к серверу и перезапустить туннели сейчас? [Y/n]: " a
     case "${a:-Y}" in n|N) APPLY=0;; *) APPLY=1;; esac
+fi
+
+# Validate both AWG2 targets before changing either config or profile state.
+if [ "$V3" = 0 ] && [ "$APPLY" = 1 ]; then
+    validate_v2_targets || exit 2
+    [ -f "$(dirname "$(readlink -f "$0")")/awg2-verify-profile.py" ] \
+        || { err "AWG2 runtime verifier is missing"; exit 2; }
 fi
 
 # ── генерация ─────────────────────────────────────────────────────────────────
@@ -313,6 +382,17 @@ if [ "$APPLY" = 1 ]; then
     if [ "$unit_present" = 1 ]; then
         for i in "$az_iface" "$vpn_iface"; do
             log "Перезапуск ${unit_pfx}${i} (чистый старт)"
+            if [ "$V3" = 0 ]; then
+                # Never delete a device independently of the service that owns it.
+                if ! systemctl restart "${unit_pfx}${i}"; then
+                    err "Не удалось поднять ${unit_pfx}${i}"
+                    apply_failed=1
+                elif ! verify_v2_runtime "$i"; then
+                    err "AWG2 runtime verification failed: $i"
+                    apply_failed=1
+                fi
+                continue
+            fi
             # stop + принудительный снос интерфейса (иначе up: already exists) + start
             systemctl stop "${unit_pfx}${i}" 2>/dev/null || true
             ip link del "$i" 2>/dev/null || true
@@ -331,6 +411,10 @@ if [ "$APPLY" = 1 ]; then
         apply_failed=1
     else
         log "Юнитов ${unit_pfx}* ещё нет — профиль применится при их первом старте."
+        # AWG2 callers must not publish new clients until a service actually
+        # accepts the profile. The installer handles code 3, starts the units
+        # and verifies them before regen-all. Keep the AWG3 path unchanged.
+        [ "$V3" = 1 ] || apply_failed=1
     fi
     # Параметры 3.0 живут только в памяти amneziawg-go и применяются из
     # <iface>.v3 на ExecStartPost. Если перезапуск не случился или UAPI
@@ -373,7 +457,11 @@ if [ "$APPLY" = 1 ]; then
         done
     fi
     if [ "$apply_failed" = 0 ]; then
-        log "Готово. Клиентские конфиги синхронизируются автоматически (regen-all)."
+        if [ "$V3" = 0 ]; then
+            log "Готово. Серверный профиль AWG2 проверен. После смены профиля выполни awg-client regen-all."
+        else
+            log "Готово. Клиентские конфиги синхронизируются автоматически (regen-all)."
+        fi
     else
         err "НЕ ГОТОВО: профиль лёг в файлы, но до работающего туннеля не доехал."
         exit 3

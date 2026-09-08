@@ -297,7 +297,11 @@ deploy_overlay() {
        "$OVERLAY/bin/awg3-datapath.sh" "$OVERLAY/bin/awg3-uapi.py" \
        "$OVERLAY/obfuscation/awg3_obfuscate.py" \
        "$OVERLAY/bin/awg-doctor.sh" "$OVERLAY/bin/awg-selftest.py" \
-       "$OVERLAY/bin/awg-upstream-check.sh" "$DEST/" 2>/dev/null || true
+       "$OVERLAY/bin/awg2-verify-profile.py" \
+       "$OVERLAY/bin/awg-upstream-check.sh" "$DEST/" || {
+        err "Не удалось скопировать исполняемые файлы слоя — установка/обновление остановлены"
+        return 1
+    }
     chmod +x "$DEST"/*.sh "$DEST"/*.py 2>/dev/null || true
     ln -sf "$DEST/awg-obfuscation.sh" /usr/local/bin/awg-obfuscation
     ln -sf "$DEST/client-awg.sh" /usr/local/bin/awg-client
@@ -722,8 +726,16 @@ switch_services() {
         systemctl stop "awg-quick@$i" 2>/dev/null || true
         ip link del "$i" 2>/dev/null || true
     done
-    systemctl start "awg-quick@${AZ_IFACE}" "awg-quick@${VPN_IFACE}" || \
+    systemctl start "awg-quick@${AZ_IFACE}" "awg-quick@${VPN_IFACE}" || {
         err "awg-quick не стартовал — проверь modprobe amneziawg (возможен reboot) и логи"
+        return 1
+    }
+    # gen_obfuscation may return 3 before the first start. Do not turn that
+    # provisional state into success or publish clients without verification.
+    for i in "$AZ_IFACE" "$VPN_IFACE"; do
+        python3 "$DEST/awg2-verify-profile.py" \
+            "$AWG_DIR/obfuscation.env" "$AWG_DIR/$i.conf" "$i" || return 1
+    done
     systemctl restart antizapret 2>/dev/null || true
     log "awg-quick@${AZ_IFACE} и awg-quick@${VPN_IFACE} перезапущены (чистый старт)"
     # DNS: view в kresd.conf для наших подсетей (идемпотентно)
