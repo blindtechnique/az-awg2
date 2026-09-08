@@ -90,6 +90,8 @@ run "--help печатает справку, а не все комментари
     bash tests/test_help.sh
 
 head_ "Диагностика"
+run "deep: DNS до namespace, ошибки этапов, очистка и userspace AWG3" \
+    "$PY" tests/test_doctor_deep.py
 run "слой 3.0: оба интерфейса и разные причины отказа" \
     bash tests/test_doctor_v3.sh overlay/bin/awg-doctor.sh
 

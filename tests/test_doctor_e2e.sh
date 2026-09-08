@@ -284,6 +284,58 @@ case "$(texts_of FAIL)" in
     *) bad "серверный профиль не проверен" "$(texts_of FAIL)$(texts_of WARN)" ;;
 esac
 
+head_ "10. --deep: настоящий доктор передаёт слой и сохраняет результат helper"
+# Copy only the entrypoint: its adjacent helper is a controlled test double.
+mkdir -p "$W/deep-doctor"
+cp "$STAND_REPO/overlay/bin/awg-doctor.sh" "$W/deep-doctor/"
+cat > "$W/deep-doctor/awg-doctor-deep.py" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+state = Path(os.environ["STUB_STATE"])
+(state / "deep-args").write_text(json.dumps(sys.argv[1:]))
+if (state / "deep-crash").exists():
+    raise SystemExit(2)
+print((state / "deep-result").read_text(), end="")
+PY
+mk_stand
+printf 'OK|локальный handshake проходит (vpn)\n' > "$STUB_STATE/deep-result"
+bash "$W/deep-doctor/awg-doctor.sh" --deep --json > "$W/out"
+if [ "$(n_of FAIL)" = 0 ] &&
+        grep -q 'локальный handshake проходит (vpn)' "$W/out" &&
+        grep -q '"vpn", "vpn-awg", "10.28.9.1"' "$STUB_STATE/deep-args"; then
+    ok "AWG2 выбран, результат helper дошёл до JSON"
+else
+    bad "сломана интеграция deep/AWG2" "$(texts_of FAIL)"
+fi
+sed -i 's/^LAYER2=1/LAYER2=0/' "$AWG/services.env"
+rm -f "$AWG/antizapret-awg.conf" "$AWG/vpn-awg.conf"
+rm -f "$DEST/clients/antizapret/antizapret-alice-am.conf" \
+      "$DEST/clients/vpn/vpn-alice-am.conf"
+printf 'OK|локальный handshake проходит (vpn3)\n' > "$STUB_STATE/deep-result"
+bash "$W/deep-doctor/awg-doctor.sh" --deep --json > "$W/out"
+if [ "$(n_of FAIL)" = 0 ] &&
+        grep -q '"vpn3", "vpn-awg3", "10.28.10.1"' "$STUB_STATE/deep-args"; then
+    ok "сервер только с AWG3 передаёт helper правильный сервис и шлюз"
+else
+    bad "сломана интеграция deep/AWG3" "$(texts_of FAIL)"
+fi
+printf 'OK|клиент создан\nFAIL|Endpoint не разрешается\n' > "$STUB_STATE/deep-result"
+bash "$W/deep-doctor/awg-doctor.sh" --deep --json > "$W/out"
+if [ "$(n_of FAIL)" = 1 ] && grep -q 'Endpoint не разрешается' "$W/out"; then
+    ok "ошибка подготовки не теряется и не превращается в handshake failure"
+else
+    bad "ошибка helper потеряна" "$(texts_of FAIL)"
+fi
+: > "$STUB_STATE/deep-crash"
+bash "$W/deep-doctor/awg-doctor.sh" --deep --json > "$W/out"
+if [ "$(n_of FAIL)" = 1 ] && grep -q 'не удалось запустить локальный deep-тест' "$W/out"; then
+    ok "падение helper не даёт зелёную диагностику"
+else
+    bad "падение helper скрыто" "$(texts_of FAIL)"
+fi
+
 printf '\n'
 [ "$fail" = 0 ] && echo "═══ ВСЁ ЗЕЛЁНОЕ ═══" || echo "═══ ЕСТЬ ПАДЕНИЯ ═══"
 exit $fail

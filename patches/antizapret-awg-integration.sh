@@ -297,7 +297,7 @@ deploy_overlay() {
        "$OVERLAY/bin/awg3-datapath.sh" "$OVERLAY/bin/awg3-uapi.py" \
        "$OVERLAY/obfuscation/awg3_obfuscate.py" \
        "$OVERLAY/bin/awg-doctor.sh" "$OVERLAY/bin/awg-selftest.py" \
-       "$OVERLAY/bin/awg2-verify-profile.py" \
+       "$OVERLAY/bin/awg2-verify-profile.py" "$OVERLAY/bin/awg-doctor-deep.py" \
        "$OVERLAY/bin/awg-upstream-check.sh" "$DEST/" || {
         err "Не удалось скопировать исполняемые файлы слоя — установка/обновление остановлены"
         return 1

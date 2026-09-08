@@ -3,15 +3,15 @@
 # awg-doctor.sh — самопроверка слоя AmneziaWG поверх AntiZapret.
 #
 #   awg-doctor              # быстрые проверки (секунды)
-#   awg-doctor --deep       # + реальный клиент в network namespace и трафик
+#   awg-doctor --deep       # + локальный handshake временного клиента
 #   awg-doctor --json       # машинно-читаемо (для бота)
 #
 # Зачем: обычная беда — «клиент не подключается», а причина где-то между
 # профилем обфускации, портом, NAT ванили и MTU. Скрипт проходит цепочку
 # сверху вниз и говорит, на каком звене рвётся.
 #
-# --deep поднимает временный netns со своим клиентом, гоняет через туннель
-# трафик и всё за собой убирает. Ничего в рабочей конфигурации не меняет.
+# --deep создаёт и затем удаляет временного пира и network namespace.
+# Проверяет локальный handshake, не DNS/скорость интернета и не путь от оператора.
 set -uo pipefail
 
 AWG_DIR=/etc/amnezia/amneziawg
@@ -749,49 +749,26 @@ fi
 
 # ── глубокая проверка ───────────────────────────────────────────────────────
 if [ "$DEEP" = 1 ]; then
-    head_ "Проверка связности (реальный клиент)"
-    NS=awgdoc$$
-    TMPNAME="doctor$$"
-    cleanup_deep() {
-        ip netns exec "$NS" awg-quick down "$TMPNAME" >/dev/null 2>&1
-        ip netns del "$NS" >/dev/null 2>&1
-        ip link del "vd$$" >/dev/null 2>&1
-        "$DEST/client-awg.sh" del "$TMPNAME" "$DOC_SVC" >/dev/null 2>&1
-        rm -f "$AWG_DIR/$TMPNAME.conf" 2>/dev/null
-    }
-    trap cleanup_deep EXIT
-    DOC_SVC=vpn; [ "$LAYER2" = 1 ] || DOC_SVC=vpn3
-    if "$DEST/client-awg.sh" add "$TMPNAME" "$DOC_SVC" >/dev/null 2>&1; then
-        ok "тестовый клиент создан ($DOC_SVC)"
-        CONF="$(ls -1 /opt/antizapret-awg/clients/$DOC_SVC/*"$TMPNAME"*-am.conf 2>/dev/null | head -1)"
-        [ -n "$CONF" ] || CONF="$(ls -1 /opt/antizapret-awg/clients/$DOC_SVC/*"$TMPNAME"* 2>/dev/null | head -1)"
-        if [ -n "$CONF" ]; then
-            ip netns add "$NS" 2>/dev/null
-            ip link add "vd$$" type veth peer name vdp 2>/dev/null
-            ip link set vdp netns "$NS" 2>/dev/null
-            ip addr add 10.199.0.1/24 dev "vd$$" 2>/dev/null; ip link set "vd$$" up
-            ip netns exec "$NS" ip link set lo up
-            ip netns exec "$NS" ip addr add 10.199.0.2/24 dev vdp
-            ip netns exec "$NS" ip link set vdp up
-            ip netns exec "$NS" ip route add default via 10.199.0.1
-            iptables -w -t nat -A POSTROUTING -s 10.199.0.0/24 -j MASQUERADE 2>/dev/null
-            grep -v '^DNS' "$CONF" > "$AWG_DIR/$TMPNAME.conf"; chmod 600 "$AWG_DIR/$TMPNAME.conf"
-            ip netns exec "$NS" awg-quick up "$TMPNAME" >/dev/null 2>&1
-            hs=0
-            for _ in $(seq 1 15); do
-                hs="$(ip netns exec "$NS" awg show "$TMPNAME" latest-handshakes 2>/dev/null | awk '{print $2}')"
-                [ "${hs:-0}" != 0 ] && break
-                sleep 1
-            done
-            [ "${hs:-0}" != 0 ] && ok "handshake проходит" || bad "handshake не проходит"
-            iptables -w -t nat -D POSTROUTING -s 10.199.0.0/24 -j MASQUERADE 2>/dev/null
-        else
-            warn "не нашёл конфиг тестового клиента — глубокая проверка пропущена"
-        fi
-    else
-        bad "не удалось создать тестового клиента"
+    head_ "Проверка связности (локальный клиент на VPS)"
+    deep_impl="$(dirname "$(readlink -f "$0")")/awg-doctor-deep.py"
+    [ -f "$deep_impl" ] || deep_impl="$DEST/awg-doctor-deep.py"
+    DOC_SVC=vpn; DOC_IFACE="${VPN_IFACE:-vpn}"; DOC_GATEWAY="${VPN_SUBNET:-10.28.8}.1"
+    if [ "$LAYER2" != 1 ]; then
+        DOC_SVC=vpn3; DOC_IFACE="${VPN3_IFACE:-vpn-awg3}"; DOC_GATEWAY="${VPN3_SUBNET:-10.28.10}.1"
     fi
-    cleanup_deep; trap - EXIT
+    if deep_result="$(python3 "$deep_impl" "$DOC_SVC" "$DOC_IFACE" "$DOC_GATEWAY" "$AWG_DIR" "$DEST" 2>/dev/null)" \
+            && [ -n "$deep_result" ]; then
+        while IFS='|' read -r status message; do
+            case "$status" in
+                OK) ok "$message" ;;
+                WARN) warn "$message" ;;
+                FAIL) bad "$message" ;;
+                *) bad "неверный ответ локального deep-теста" ;;
+            esac
+        done <<< "$deep_result"
+    else
+        bad "не удалось запустить локальный deep-тест" "проверь поставку awg-doctor-deep.py и Python"
+    fi
 fi
 
 # ── вывод ───────────────────────────────────────────────────────────────────

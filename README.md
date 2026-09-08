@@ -403,7 +403,7 @@ systemctl disable --now awg3@antizapret-awg3 awg3@vpn-awg3
 
 ```bash
 awg-doctor                                   # первым делом: всё по слоям одним экраном
-awg-doctor --deep                            # + настоящий handshake в netns (по одному слою: 2.0, а если он не поднят — 3.0)
+awg-doctor --deep                            # + локальный handshake: AWG2, если включён, иначе AWG3
 
 awg show                                    # интерфейсы слоя, peers, handshake, трафик
 wg show                                      # штатные WireGuard-интерфейсы
@@ -417,8 +417,8 @@ systemctl status awg3@antizapret-awg3        # слой 3.0 (userspace amneziawg
 | нет интерфейса в `awg show` | сначала `awg-doctor` — он назовёт интерфейс и юнит. Слой 2.0: `journalctl -u awg-quick@antizapret-awg` (или `@vpn-awg`), слой 3.0: `journalctl -u awg3@antizapret-awg3` (или `@vpn-awg3`) |
 | `__AWG_OBFUSCATION__` в конфиге слоя 2.0 | обфускация не применилась, `awg setconf` спотыкается об эту строку → `awg-obfuscation --regenerate --apply && awg-client regen-all`. ⚠️ профиль будет **новым**: ключи клиентов сохранятся, но конфиги придётся раздать заново |
 | `__AWG3_OBFUSCATION__` в конфиге слоя 3.0 | то же самое для 3.0, но с `--v3`: `awg-obfuscation --v3 --regenerate --apply && awg-client regen-all`. Без `--v3` перегенерируется чужой слой |
-| peer есть, но нет `latest handshake` | 1) профиль клиента ≠ профиля сервера → `awg-client regen-all`, потом раздай конфиг заново и переимпортируй; 2) до сервера не доходит UDP → `awg-doctor` покажет, слушается ли порт, а `awg-doctor --deep` поднимет настоящий handshake в netns |
-| handshake есть, данные не идут (`received` не растёт) | сначала `awg-doctor --deep`: если handshake в netns проходит, профиль ни при чём. Дальше два кандидата — MTU (у слоя 2.0 меняется через `--reconfigure`, у 3.0 зашит 1380) и блокировка по IP/AS у провайдера (смени IP или хостинг; WARP настраивается на стороне ванильного AntiZapret, слой его не ставит) |
+| peer есть, но нет `latest handshake` | Сверь актуальность импортированного профиля, Endpoint и поступление UDP от клиента. `--deep` проверяет отдельного локального клиента на VPS, а не доступ от оператора. Ошибка подготовки теста не означает, что handshake рабочего клиента блокируется |
+| handshake есть, данные не идут (`received` не растёт) | Проверяй DNS, маршруты/NAT, MTU и выбранный выход (в том числе WARP) отдельно. Успех локального `--deep` не исключает устаревший конфиг телефона и не проверяет передачу данных через интернет; смена IP/хостинга без проверки причины не требуется |
 | `awg-quick: ... already exists` | `ip link del antizapret-awg && systemctl start awg-quick@antizapret-awg` (для второго интерфейса — `vpn-awg`). Слою 3.0 это не нужно: `awg3-datapath.sh` сносит зависший интерфейс сам |
 | бот не видит стоковый клиент | обнови слой (`--update`) — фикс имён файлов включён |
 | split-клиент открывает только «прямые» сайты | список маршрутов AntiZapret (`/etc/wireguard/ips`) обновился, а `AllowedIPs` фиксируется в конфиге в момент создания клиента и больше не пересобирается — ни `regen-all`, ни «📥 Скачать» его не трогают. Пересоздай клиента: `awg-client del ivan antizapret && awg-client add ivan antizapret` |
